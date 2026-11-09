@@ -101,9 +101,10 @@ def profile(
 
 @app.command()
 def optimize(
-    config: str = typer.Option("configs/qwen_math.yaml", "--config", "-c", help="Path to config YAML"),
+    config: str = typer.Option("configs/qwen_math_stage1.yaml", "--config", "-c", help="Path to config YAML"),
     batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Evaluation batch size (e.g. 32, 64)"),
     max_batch_size: Optional[int] = typer.Option(None, "--max-batch-size", help="Max auto-detected batch size (default 64)"),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume from last accepted checkpoint if available"),
 ):
     """Execute complete incremental FLAP pruning optimization loop."""
     cfg = Stage1Config.from_yaml(config)
@@ -114,11 +115,66 @@ def optimize(
     console.print(Panel(
         f"[bold cyan]Stage 1 Incremental FLAP Pruning Optimizer[/bold cyan]\n"
         f"Model: [green]{cfg.model.model_id}[/green] | Target Retention: [magenta]{cfg.pruning.retention*100:.1f}%[/magenta]\n"
+        f"Batch Size: [yellow]{cfg.evaluation.batch_size or f'Auto (max {cfg.evaluation.max_batch_size})'}[/yellow] | Resume: [cyan]{resume}[/cyan]"
+    ))
+
+    optimizer = FLAPOptimizer(cfg)
+    summary = optimizer.optimize(resume=resume)
+
+    history = optimizer.tracker.get_all_records()
+    report_file = os.path.join(cfg.output_dir, "report.md")
+    ReportGenerator.generate_markdown(summary, history, report_file)
+
+    console.print("\n")
+    best = summary.get("best_checkpoint") or {}
+    table = Table(title="[bold green]Stage 1 Pruning Execution Summary[/bold green]")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+
+    table.add_row("Stopping Reason", str(summary.get("stopping_reason")))
+    table.add_row("Baseline Accuracy", f"{summary.get('baseline_accuracy', 0.0)*100:.2f}%")
+    table.add_row("Best Compressed Accuracy", f"{best.get('accuracy', 0.0)*100:.2f}%")
+    table.add_row("Relative Retention", f"{best.get('retention_pct', 100.0):.2f}%")
+    table.add_row("Original Parameters", f"{summary.get('baseline_params', 0):,}")
+    table.add_row("Final Parameters", f"{best.get('params_after', 0):,}")
+    pruned = summary.get("baseline_params", 0) - best.get("params_after", 0)
+    table.add_row("Parameters Pruned", f"{pruned:,} ({pruned/1e6:.2f}M)")
+    table.add_row("Best Checkpoint", str(best.get("checkpoint_path")))
+    table.add_row("Report Generated", report_file)
+
+    console.print(table)
+
+
+@app.command()
+def resume(
+    run_dir: str = typer.Argument("runs/qwen_math_stage1", help="Path to run directory containing experiments.db and checkpoints"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config YAML (optional)"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Evaluation batch size"),
+    max_batch_size: Optional[int] = typer.Option(None, "--max-batch-size", help="Max auto-detected batch size (default 64)"),
+):
+    """Resume an interrupted Stage 1 pruning optimization from the last accepted checkpoint."""
+    if config is None:
+        cand_config = os.path.join(run_dir, "config.yaml")
+        if os.path.exists(cand_config):
+            config = cand_config
+        else:
+            config = "configs/qwen_math_stage1.yaml" if os.path.exists("configs/qwen_math_stage1.yaml") else "configs/qwen_math.yaml"
+
+    cfg = Stage1Config.from_yaml(config)
+    cfg.output_dir = run_dir
+    if batch_size is not None:
+        cfg.evaluation.batch_size = batch_size
+    if max_batch_size is not None:
+        cfg.evaluation.max_batch_size = max_batch_size
+
+    console.print(Panel(
+        f"[bold cyan]Resuming Stage 1 FLAP Pruning Optimizer[/bold cyan]\n"
+        f"Run Directory: [green]{run_dir}[/green] | Config: [yellow]{config}[/yellow]\n"
         f"Batch Size: [yellow]{cfg.evaluation.batch_size or f'Auto (max {cfg.evaluation.max_batch_size})'}[/yellow]"
     ))
 
     optimizer = FLAPOptimizer(cfg)
-    summary = optimizer.optimize()
+    summary = optimizer.optimize(resume=True)
 
     history = optimizer.tracker.get_all_records()
     report_file = os.path.join(cfg.output_dir, "report.md")

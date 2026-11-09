@@ -2,7 +2,7 @@
 Physical tensor slicing for SwiGLU MLP intermediate channels.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
@@ -71,9 +71,12 @@ class MLPSlicer:
         cls,
         model: PreTrainedModel,
         plan: AllocationPlan,
+        active_channels: Optional[Dict[int, List[int]]] = None,
     ) -> Dict[str, Any]:
         """
         Applies allocation plan across all layers in the model.
+        If active_channels is provided, translates global original channel indices into
+        relative positions within the currently sliced tensors to avoid index-out-of-bounds.
         """
         if hasattr(model, "model") and hasattr(model.model, "layers"):
             layers = model.model.layers
@@ -84,11 +87,25 @@ class MLPSlicer:
 
         total_removed_params = 0
         layer_sizes = {}
+        new_active = {}
 
         for l_idx, keep_idx in plan.keep_indices.items():
-            res = cls.slice_mlp(layers[l_idx].mlp, keep_idx)
+            if active_channels is not None and l_idx in active_channels:
+                curr_active = active_channels[l_idx]
+                pos_map = {orig_ch: pos for pos, orig_ch in enumerate(curr_active)}
+                relative_keep = [pos_map[orig_ch] for orig_ch in keep_idx if orig_ch in pos_map]
+                new_active[l_idx] = [curr_active[pos] for pos in relative_keep]
+            else:
+                relative_keep = keep_idx
+                new_active[l_idx] = list(keep_idx)
+
+            res = cls.slice_mlp(layers[l_idx].mlp, relative_keep)
             total_removed_params += res["params_removed"]
             layer_sizes[l_idx] = res["new_intermediate_size"]
+
+        if active_channels is not None:
+            active_channels.clear()
+            active_channels.update(new_active)
 
         # If uniform, synchronize model.config.intermediate_size
         sizes_set = set(layer_sizes.values())

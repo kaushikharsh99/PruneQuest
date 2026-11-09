@@ -46,6 +46,7 @@ class FLAPOptimizer:
         self.baseline_accuracy: float = 0.0
         self.baseline_loss: float = 0.0
         self.baseline_params: int = 0
+        self.active_channels: Dict[int, list] = {}
 
     def initialize(self):
         """Load model, tokenizer, and dataset partitions."""
@@ -57,6 +58,19 @@ class FLAPOptimizer:
         )
         self.model, self.tokenizer = self.adapter.load()
         self.baseline_params = self.adapter.count_parameters()
+
+        # Initialize active channels to full intermediate width per layer
+        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+            layers = self.model.model.layers
+        elif hasattr(self.model, "layers"):
+            layers = self.model.layers
+        else:
+            layers = []
+
+        self.active_channels = {
+            l_idx: list(range(layer.mlp.gate_proj.out_features))
+            for l_idx, layer in enumerate(layers)
+        }
 
         # Load disjoint data partitions
         self.splits = self.dataset_manager.load_and_partition(
@@ -162,7 +176,7 @@ class FLAPOptimizer:
         self.tracker.log_candidate(baseline_record)
         return baseline_record
 
-    def optimize(self) -> Dict[str, Any]:
+    def optimize(self, resume: bool = True) -> Dict[str, Any]:
         """
         Executes incremental adaptive pruning loop with rollback and acceptance checks.
         """
@@ -178,10 +192,39 @@ class FLAPOptimizer:
         search_start_time = time.time()
         stopping_reason = "completed"
 
-        latest_acc = self.tracker.get_latest_accepted()
-        if latest_acc and latest_acc["candidate_id"] != "baseline":
-            current_ratio = latest_acc["prune_ratio"]
-            step_index = latest_acc["step_index"]
+        if resume:
+            latest_acc = self.tracker.get_latest_accepted()
+            if latest_acc and latest_acc["candidate_id"] != "baseline":
+                ckpt_path = latest_acc.get("checkpoint_path")
+                if ckpt_path and not os.path.exists(ckpt_path):
+                    alt_path = os.path.join(self.config.output_dir, "checkpoints", os.path.basename(ckpt_path))
+                    if os.path.exists(alt_path):
+                        ckpt_path = alt_path
+
+                if ckpt_path and os.path.exists(ckpt_path):
+                    print(f"\n🔄 Resuming from accepted checkpoint: {ckpt_path}")
+                    print(f"   Pruned: {latest_acc['prune_ratio']*100:.2f}% | Score: {latest_acc['num_correct']}/{latest_acc['sample_size']} ({latest_acc['accuracy']*100:.2f}%) | Retention: {latest_acc['retention_pct']:.2f}%\n")
+                    del self.model
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    self.adapter = ModelRegistry.create_adapter(
+                        model_id_or_path=ckpt_path,
+                        device=self.config.model.device,
+                        torch_dtype=self.config.model.torch_dtype,
+                        trust_remote_code=self.config.model.trust_remote_code,
+                    )
+                    self.model, _ = self.adapter.load()
+                    current_ratio = latest_acc["prune_ratio"]
+                    step_index = latest_acc["step_index"]
+
+                    plan = (
+                        PruningAllocator.allocate_uniform(self.importance_scores, current_ratio)
+                        if self.config.flap.allocation == "uniform"
+                        else PruningAllocator.allocate_global_adaptive(self.importance_scores, current_ratio)
+                    )
+                    self.active_channels = {k: list(v) for k, v in plan.keep_indices.items()}
 
         while current_ratio < self.config.pruning.maximum_total_ratio:
             if evaluations_count >= self.config.pruning.max_candidate_evaluations:
@@ -208,10 +251,10 @@ class FLAPOptimizer:
                 plan = PruningAllocator.allocate_global_adaptive(self.importance_scores, target_ratio)
 
             # 2. Transactional backup
-            backup = PruningStateManager.backup_mlp_weights(self.model)
+            backup = PruningStateManager.backup_mlp_weights(self.model, active_channels=self.active_channels)
 
             # 3. Physical slicing
-            _ = MLPSlicer.apply_plan(self.model, plan)
+            _ = MLPSlicer.apply_plan(self.model, plan, active_channels=self.active_channels)
             new_params = self.adapter.count_parameters()
 
             # 4. Stage A: Proxy loss screening
@@ -226,7 +269,7 @@ class FLAPOptimizer:
             loss_threshold = (self.baseline_loss * 2.5) + 1.0
             if screen_res.loss > loss_threshold:
                 # Screening failed
-                PruningStateManager.restore_mlp_weights(self.model, backup)
+                PruningStateManager.restore_mlp_weights(self.model, backup, active_channels=self.active_channels)
                 del backup
                 gc.collect()
                 rej_rec = {
@@ -267,7 +310,7 @@ class FLAPOptimizer:
 
             if accept_res.accuracy < min_required_acc:
                 # Retention failed
-                PruningStateManager.restore_mlp_weights(self.model, backup)
+                PruningStateManager.restore_mlp_weights(self.model, backup, active_channels=self.active_channels)
                 del backup
                 gc.collect()
                 rej_rec = {
@@ -325,7 +368,7 @@ class FLAPOptimizer:
 
             if not reload_ok:
                 # Reload validation failed
-                PruningStateManager.restore_mlp_weights(self.model, backup)
+                PruningStateManager.restore_mlp_weights(self.model, backup, active_channels=self.active_channels)
                 del backup
                 gc.collect()
                 rej_rec = {

@@ -2,7 +2,7 @@
 Transactional state management and lossless in-memory rollback for candidate pruning.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
@@ -14,7 +14,11 @@ class PruningStateManager:
     """
 
     @classmethod
-    def backup_mlp_weights(cls, model: PreTrainedModel) -> Dict[int, Dict[str, Any]]:
+    def backup_mlp_weights(
+        cls,
+        model: PreTrainedModel,
+        active_channels: Optional[Dict[int, List[int]]] = None,
+    ) -> Dict[str, Any]:
         """
         Clones all MLP weight tensors to CPU RAM.
         """
@@ -25,7 +29,7 @@ class PruningStateManager:
         else:
             raise AttributeError("Unsupported model architecture: layers not found.")
 
-        backup: Dict[int, Dict[str, Any]] = {}
+        backup: Dict[str, Any] = {}
         for l_idx, layer in enumerate(layers):
             mlp = layer.mlp
             backup[l_idx] = {
@@ -45,10 +49,17 @@ class PruningStateManager:
                 "down_b": mlp.down_proj.bias.detach().cpu().clone() if mlp.down_proj.bias is not None else None,
             }
         backup["_config_intermediate_size"] = getattr(model.config, "intermediate_size", None)
+        if active_channels is not None:
+            backup["_active_channels"] = {k: list(v) for k, v in active_channels.items()}
         return backup
 
     @classmethod
-    def restore_mlp_weights(cls, model: PreTrainedModel, backup: Dict[int, Dict[str, Any]]):
+    def restore_mlp_weights(
+        cls,
+        model: PreTrainedModel,
+        backup: Dict[str, Any],
+        active_channels: Optional[Dict[int, List[int]]] = None,
+    ):
         """
         Restores all MLP weight tensors from CPU backup.
         """
@@ -94,3 +105,7 @@ class PruningStateManager:
 
         if backup.get("_config_intermediate_size") is not None and hasattr(model.config, "intermediate_size"):
             model.config.intermediate_size = backup["_config_intermediate_size"]
+
+        if active_channels is not None and "_active_channels" in backup:
+            active_channels.clear()
+            active_channels.update({k: list(v) for k, v in backup["_active_channels"].items()})
