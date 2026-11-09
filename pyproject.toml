@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prunequest"
-version = "0.2.0"
+version = "0.3.0"
 description = "Autonomous, Benchmark-Guided LLM Structural Pruning Framework"
 readme = "README.md"
 authors = [
@@ -53,6 +53,7 @@ eval = [
 
 [project.scripts]
 prunequest = "prunequest.cli:app"
+stage1 = "prunequest.stage1.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/kaushikharsh99/PruneQuest"

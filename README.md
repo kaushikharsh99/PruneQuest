@@ -119,16 +119,27 @@ prunequest benchmarks info gsm8k
 
 ### 5. Launch Pruning Search
 
+#### Stage 1: Structured Width / MLP Channel Pruning (FLAP)
+Fluctuation-based Adaptive Structured Pruning on SwiGLU MLP intermediate projections with automatic step-back halving ($5\% \to 2.5\% \to 1.25\% \to 0.6125\%$) and VRAM-aware batched evaluation (up to batch size 64):
+```bash
+# Using prunequest CLI
+prunequest stage1 optimize --config configs/qwen_math_stage1.yaml
+
+# Or using the stage1 direct alias
+stage1 optimize --config configs/qwen_math_stage1.yaml --batch-size 32
+```
+
+#### Stage 2: Structured Depth / Layer Pruning
+Autonomous search controller pruning redundant transformer blocks based on Block Influence hidden state cosine distance:
 ```bash
 # Multi-benchmark pruning search with 99% retention target
-prunequest run \
+prunequest stage2 run \
     --model Qwen/Qwen2.5-Math-1.5B-Instruct \
     --benchmark gsm8k \
-    --benchmark arc_challenge \
     --retain 0.99 \
     --max-iterations 3 \
     --split smoke \
-    --output-dir ./runs/qwen_run_01
+    --output ./runs/qwen_stage2_run
 ```
 
 ### 6. Python API Example

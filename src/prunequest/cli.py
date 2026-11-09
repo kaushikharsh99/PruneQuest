@@ -28,11 +28,17 @@ from prunequest.core.tracking import ExperimentTracker
 from prunequest.export.validation import SubprocessValidator
 from prunequest.reporting.metrics import clean_gpu_memory
 
+from prunequest.stage1.cli import app as stage1_app
+
 app = typer.Typer(
     name="prunequest",
-    help="Autonomous, Benchmark-Guided LLM Structural Pruning Framework.",
+    help="Autonomous, Two-Stage Benchmark-Guided LLM Structural Pruning Framework.",
     add_completion=False,
 )
+
+stage2_app = typer.Typer(help="Stage 2: Structured Depth / Layer Pruning Framework.")
+app.add_typer(stage1_app, name="stage1", help="Stage 1: Structured Width / Channel Pruning via FLAP.")
+app.add_typer(stage2_app, name="stage2", help="Stage 2: Structured Depth / Layer Pruning.")
 
 benchmarks_app = typer.Typer(help="Discover, inspect, and validate benchmarks.")
 app.add_typer(benchmarks_app, name="benchmarks")
@@ -99,6 +105,7 @@ def doctor():
 
 
 @app.command()
+@stage2_app.command(name="inspect")
 def inspect(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m", help="Hugging Face model ID or directory"),
     load_weights: bool = typer.Option(False, "--load-weights", help="Load full weights to inspect actual tensors"),
@@ -227,6 +234,7 @@ def preview_benchmark_spec(
 
 
 @app.command()
+@stage2_app.command(name="baseline")
 def baseline(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
@@ -259,6 +267,7 @@ def baseline(
 
 
 @app.command()
+@stage2_app.command(name="run")
 def run(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m", help="Pretrained model ID or path"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
@@ -324,6 +333,7 @@ def run(
 
 
 @app.command()
+@stage2_app.command(name="resume")
 def resume(
     run_dir: str = typer.Argument(..., help="Path to previous run directory containing experiments.db"),
 ):
@@ -345,6 +355,7 @@ def resume(
 
 
 @app.command()
+@stage2_app.command(name="report")
 def report(
     run_dir: str = typer.Argument(..., help="Path to run directory containing experiments.db"),
     output: str = typer.Option("reports", "--output", "-o", help="Directory to save report and plots"),
@@ -376,6 +387,7 @@ def report(
 
 
 @app.command()
+@stage2_app.command(name="export")
 def export(
     checkpoint: str = typer.Argument(..., help="Path to source checkpoint"),
     output: str = typer.Option(..., "--output", "-o", help="Target output directory"),
