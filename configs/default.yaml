@@ -1,0 +1,37 @@
+# PruneQuest Master Configuration
+
+model:
+  model_id: "Qwen/Qwen2.5-Math-1.5B-Instruct"
+  torch_dtype: "bfloat16"
+  device: "cuda:0"
+  trust_remote_code: false
+
+benchmark:
+  name: "gsm8k"
+  split: "smoke"
+  seed: 42
+  calibration_size: 256
+  dev_size: 512
+  smoke_size: 16
+  screening_size: 64
+  max_new_tokens: 512
+  temperature: 0.0
+  do_sample: false
+
+pruning:
+  strategy: "greedy"
+  backend: "layer"
+  metric: "block_influence"
+  max_iterations: 4
+  max_candidates: 3
+  retain: 0.99
+  time_budget_sec: null
+  dry_run: false
+
+hardware:
+  max_vram_gb: 5.5
+  clear_cache: true
+  cpu_offload_validation: true
+
+output_dir: "runs/prunequest_run"
+reports_dir: "reports"

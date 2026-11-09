@@ -1,0 +1,13 @@
+# Example configuration for pruning Qwen2.5-Math on GSM8K with 99% accuracy retention
+model:
+  model_id: "Qwen/Qwen2.5-Math-1.5B-Instruct"
+  torch_dtype: "bfloat16"
+  device: "cuda:0"
+
+benchmark:
+  name: "gsm8k"
+  max_new_tokens: 512
+
+pruning:
+  retain: 0.99
+  max_iterations: 3

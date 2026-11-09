@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Test & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Local experiment runs & checkpoints (do not commit multi-GB safetensors)
+runs/
+*.safetensors
+*.bin
+*.pt
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
