@@ -231,7 +231,7 @@ def baseline(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
     split: str = typer.Option("smoke", "--split", "-s", help="smoke, screening, dev, or full"),
-    samples: Optional[int] = typer.Option(16, "--samples", "-n", help="Sample count limit"),
+    samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Sample count limit"),
     device: str = typer.Option("cuda:0", "--device", "-d"),
     output: str = typer.Option("runs/prunequest_baseline", "--output", "-o"),
 ):
@@ -240,7 +240,7 @@ def baseline(
 
     cfg = PruneQuestConfig(
         model=ModelConfig(model_id=model, device=device),
-        benchmark=BenchmarkConfig(name=benchmark, split=split, smoke_size=samples or 16),
+        benchmark=BenchmarkConfig(name=benchmark, split=split, smoke_size=samples or 16, sample_limit=samples),
         output_dir=output,
     )
     controller = SearchController(cfg)
@@ -265,7 +265,7 @@ def run(
     retain: float = typer.Option(0.99, "--retain", "-r", help="Minimum accuracy retention ratio [0.0 - 1.0]"),
     max_iterations: int = typer.Option(3, "--max-iterations", "-i", help="Maximum pruning iterations"),
     split: str = typer.Option("smoke", "--split", "-s", help="smoke, dev, or full"),
-    samples: int = typer.Option(16, "--samples", "-n", help="Sample limit for screening"),
+    samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Sample limit for benchmark evaluation (e.g. 1000)"),
     output: str = typer.Option("runs/prunequest_run", "--output", "-o", help="Run directory"),
     reports: str = typer.Option("reports", "--reports", help="Reports directory"),
     device: str = typer.Option("cuda:0", "--device", "-d", help="Inference device"),
@@ -282,7 +282,7 @@ def run(
     else:
         cfg = PruneQuestConfig(
             model=ModelConfig(model_id=model, device=device),
-            benchmark=BenchmarkConfig(name=benchmark, split=split, smoke_size=samples),
+            benchmark=BenchmarkConfig(name=benchmark, split=split, smoke_size=samples or 16, sample_limit=samples),
             pruning=PruningConfig(retain=retain, max_iterations=max_iterations),
             output_dir=output,
             reports_dir=reports,

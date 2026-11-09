@@ -23,6 +23,7 @@ class BenchmarkConfig(BaseModel):
     dev_size: int = 512
     smoke_size: int = 16
     screening_size: int = 64
+    sample_limit: Optional[int] = None
     max_new_tokens: int = 512
     temperature: float = 0.0
     do_sample: bool = False

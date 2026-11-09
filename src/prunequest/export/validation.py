@@ -15,15 +15,7 @@ class SubprocessValidator:
     """
 
     @classmethod
-    def validate_checkpoint(
-        cls,
-        checkpoint_dir: str,
-        device: str = "cuda:0",
-        timeout_sec: int = 120,
-    ) -> Tuple[bool, str]:
-        if not os.path.exists(checkpoint_dir):
-            return False, f"Directory does not exist: {checkpoint_dir}"
-
+    def _run_validation_script(cls, checkpoint_dir: str, device: str, timeout_sec: int) -> Tuple[bool, str]:
         verification_script = f"""
 import os, sys
 try:
@@ -33,7 +25,11 @@ try:
 
     path = {repr(checkpoint_dir)}
     tokenizer = AutoTokenizer.from_pretrained(path)
-    model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16, device_map='{device}')
+    model = AutoModelForCausalLM.from_pretrained(
+        path,
+        dtype=torch.float32 if '{device}' == 'cpu' else torch.bfloat16,
+        device_map='{device}'
+    )
     inputs = tokenizer('The sum of 10 and 20 is', return_tensors='pt').to('{device}')
     with torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=10, do_sample=False)
@@ -61,3 +57,23 @@ except Exception as e:
             return False, res.stderr.strip() or res.stdout.strip()
         except Exception as e:
             return False, f"Subprocess validator error: {e}"
+
+    @classmethod
+    def validate_checkpoint(
+        cls,
+        checkpoint_dir: str,
+        device: str = "cpu",
+        timeout_sec: int = 120,
+    ) -> Tuple[bool, str]:
+        if not os.path.exists(checkpoint_dir):
+            return False, f"Directory does not exist: {checkpoint_dir}"
+
+        ok, msg = cls._run_validation_script(checkpoint_dir, device, timeout_sec)
+        # If GPU validation encountered CUDA out of memory due to process contention, fallback to CPU
+        if not ok and ("out of memory" in msg.lower() or "cuda" in msg.lower()) and device != "cpu":
+            fallback_ok, fallback_msg = cls._run_validation_script(checkpoint_dir, "cpu", timeout_sec)
+            if fallback_ok:
+                return True, f"{fallback_msg} (validated on CPU fallback due to GPU memory contention)"
+            return False, fallback_msg
+
+        return ok, msg

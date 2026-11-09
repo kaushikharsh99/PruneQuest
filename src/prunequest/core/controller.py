@@ -98,13 +98,15 @@ class SearchController:
         return None
 
     def _get_split_samples(self, split: str) -> Optional[int]:
+        if self.config.benchmark.sample_limit is not None:
+            return self.config.benchmark.sample_limit
         if split == "smoke":
             return self.config.benchmark.smoke_size
         elif split == "dev":
             return self.config.benchmark.dev_size
         elif split == "screening":
             return self.config.benchmark.screening_size
-        elif split == "full":
+        elif split in ("full", "test"):
             return None
         return self.config.benchmark.smoke_size
 
@@ -375,10 +377,8 @@ class SearchController:
 
             # 6. Subprocess Reload Validation
             if self.config.hardware.cpu_offload_validation:
-                self.adapter.model.to("cpu")
-                clean_gpu_memory(self.adapter.device)
-                reload_ok, reload_msg = SubprocessValidator.validate_checkpoint(ckpt_dir, device=self.adapter.device)
-                self.adapter.model.to(self.adapter.device)
+                # Validate in isolated subprocess using CPU memory to eliminate VRAM contention on <=8GB GPUs
+                reload_ok, reload_msg = SubprocessValidator.validate_checkpoint(ckpt_dir, device="cpu")
             else:
                 reload_ok, reload_msg = True, "skipped"
 

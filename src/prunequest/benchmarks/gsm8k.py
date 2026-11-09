@@ -142,6 +142,7 @@ class GSM8KBenchmark(BaseBenchmark):
             "screening": dev_samples[:screening_size],
             "recovery_reserved": recovery_samples,
             "test": test_samples,
+            "full": test_samples,
         }
         return self.data_splits
 
@@ -224,7 +225,10 @@ class GSM8KBenchmark(BaseBenchmark):
         if not self.data_splits:
             self.load_data()
 
-        samples = self.data_splits.get(split_name, self.data_splits.get("smoke", []))
+        if split_name in ("full", "test"):
+            samples = self.data_splits.get("full", self.data_splits.get("test", []))
+        else:
+            samples = self.data_splits.get(split_name, self.data_splits.get("smoke", []))
         if max_samples:
             samples = samples[:max_samples]
 
