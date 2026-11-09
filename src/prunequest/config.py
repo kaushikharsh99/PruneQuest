@@ -2,7 +2,7 @@
 Configuration management using Pydantic and PyYAML.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional
 from pydantic import BaseModel, Field
 import yaml
 import os

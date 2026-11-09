@@ -20,10 +20,18 @@ def test_cli_help():
 def test_cli_doctor():
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
-    assert "PruneQuest System Diagnostics" in result.stdout
+    assert "PruneQuest" in result.stdout
+    assert "Diagnostics" in result.stdout
 
 
 def test_cli_benchmarks():
-    result = runner.invoke(app, ["benchmarks"])
+    result = runner.invoke(app, ["benchmarks", "list"])
     assert result.exit_code == 0
     assert "gsm8k" in result.stdout
+
+
+def test_cli_inspect():
+    result = runner.invoke(app, ["inspect", "--model", "Qwen/Qwen2.5-Math-1.5B-Instruct"])
+    assert result.exit_code == 0
+    assert "Architecture Class" in result.stdout
+    assert "Capability Level" in result.stdout

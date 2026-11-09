@@ -4,7 +4,6 @@ Unit tests for ExperimentTracker, Pareto updates, and CSV export.
 
 import os
 import tempfile
-import pytest
 from prunequest.core.tracking import ExperimentTracker
 
 
@@ -13,7 +12,7 @@ def test_tracker_logging_and_export():
         tracker = ExperimentTracker(tmpdir, experiment_name="test_exp")
 
         tracker.log_iteration({
-            "iteration_id": "base",
+            "iteration_id": "baseline",
             "params_after": 1500000000,
             "accuracy": 0.90,
             "status": "baseline",
@@ -31,6 +30,15 @@ def test_tracker_logging_and_export():
 
         df = tracker.get_history_dataframe()
         assert len(df) == 2
+
+        baseline = tracker.get_baseline()
+        assert baseline is not None
+        assert baseline["iteration_id"] == "baseline"
+        assert baseline["accuracy"] == 0.90
+        assert baseline["params_after"] == 1500000000
+
+        all_acc = tracker.get_all_accepted()
+        assert len(all_acc) == 2
 
 
 def test_pareto_frontier_update():

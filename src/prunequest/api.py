@@ -4,10 +4,9 @@ Public Python API for PruneQuest.
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from prunequest.config import PruneQuestConfig, ModelConfig, BenchmarkConfig, PruningConfig, HardwareConfig
+from prunequest.config import PruneQuestConfig, ModelConfig, BenchmarkConfig, PruningConfig
 from prunequest.core.controller import SearchController
 from prunequest.reporting.reports import ReportGenerator
-from prunequest.core.tracking import ExperimentTracker
 
 
 @dataclass
@@ -43,9 +42,11 @@ class PruneQuest:
         self,
         model: str = "Qwen/Qwen2.5-Math-1.5B-Instruct",
         benchmark: str = "gsm8k",
+        benchmarks: Optional[Any] = None,
         retain: float = 0.99,
         max_iterations: int = 4,
         max_candidates: int = 3,
+        split: str = "smoke",
         device: str = "cuda:0",
         torch_dtype: str = "bfloat16",
         output_dir: str = "runs/prunequest_run",
@@ -56,9 +57,16 @@ class PruneQuest:
         if config_path:
             self.config = PruneQuestConfig.from_yaml(config_path)
         else:
+            bench_target = benchmark
+            if benchmarks:
+                if isinstance(benchmarks, list):
+                    bench_target = ",".join(benchmarks)
+                else:
+                    bench_target = str(benchmarks)
+
             self.config = PruneQuestConfig(
                 model=ModelConfig(model_id=model, device=device, torch_dtype=torch_dtype),
-                benchmark=BenchmarkConfig(name=benchmark),
+                benchmark=BenchmarkConfig(name=bench_target, split=split),
                 pruning=PruningConfig(retain=retain, max_iterations=max_iterations, max_candidates=max_candidates, time_budget_sec=time_budget_sec),
                 output_dir=output_dir,
                 reports_dir=reports_dir,

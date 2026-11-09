@@ -2,13 +2,11 @@
 Unit tests for benchmark parsing, mathematical normalization, and answer extraction.
 """
 
-import pytest
 from prunequest.benchmarks.gsm8k import (
     GSM8KBenchmark,
     extract_boxed_content,
     clean_math_answer,
     extract_gsm8k_gold_answer,
-    parse_numeric_value,
 )
 
 

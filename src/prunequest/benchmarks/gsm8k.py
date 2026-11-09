@@ -12,7 +12,6 @@ from datasets import load_dataset
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from prunequest.benchmarks.base import BaseBenchmark, BenchmarkSample, EvaluationResult
-from prunequest.reporting.metrics import clean_gpu_memory
 from prunequest.exceptions import BenchmarkError
 
 try:
@@ -93,6 +92,9 @@ class GSM8KBenchmark(BaseBenchmark):
     """
 
     SYSTEM_PROMPT = "Please reason step by step, and put your final answer within \\boxed{}."
+
+    def __init__(self, seed: int = 42, max_new_tokens: int = 512):
+        super().__init__(name="gsm8k", seed=seed, max_new_tokens=max_new_tokens)
 
     def load_data(
         self,
@@ -195,7 +197,7 @@ class GSM8KBenchmark(BaseBenchmark):
                 if math.isclose(cand_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
                     return True, pred_cand, gold_cleaned
 
-        lines = [l.strip() for l in prediction_text.split("\n") if l.strip()]
+        lines = [line.strip() for line in prediction_text.split("\n") if line.strip()]
         if lines:
             last_line = lines[-1]
             nums = re.findall(r"-?\d+(?:\.\d+)?", last_line.replace(",", ""))

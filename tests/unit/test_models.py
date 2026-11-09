@@ -3,10 +3,8 @@ Unit tests for model adapter using a lightweight synthetic Qwen2 model.
 """
 
 import pytest
-import torch
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
-from transformers import AutoTokenizer
 
 from prunequest.models.qwen2 import Qwen2Adapter
 from prunequest.models.registry import ModelRegistry

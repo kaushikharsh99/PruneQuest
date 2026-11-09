@@ -18,6 +18,13 @@ class LayerPruner(BasePruner):
     def __init__(self, metric: str = "block_influence"):
         self.metric = metric
 
+    def supports(self, adapter: BaseModelAdapter) -> bool:
+        try:
+            layers = adapter.get_layers()
+            return len(layers) > 2
+        except Exception:
+            return False
+
     def analyze(
         self,
         adapter: BaseModelAdapter,

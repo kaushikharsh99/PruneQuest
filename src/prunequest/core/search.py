@@ -3,7 +3,7 @@ Search strategy abstraction for candidate selection and optimization.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List
 from prunequest.pruning.base import PruningCandidate
 
 

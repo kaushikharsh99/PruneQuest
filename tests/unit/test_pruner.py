@@ -3,7 +3,6 @@ Unit tests for LayerPruner using synthetic model adapter.
 """
 
 import pytest
-import torch
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 

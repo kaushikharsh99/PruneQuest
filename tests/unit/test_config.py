@@ -4,7 +4,7 @@ Unit tests for configuration validation and serialization.
 
 import tempfile
 import pytest
-from prunequest.config import PruneQuestConfig, ModelConfig, BenchmarkConfig, PruningConfig
+from prunequest.config import PruneQuestConfig, ModelConfig, PruningConfig
 
 
 def test_default_config():

@@ -166,9 +166,29 @@ class ExperimentTracker:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             res = cursor.execute(
-                "SELECT * FROM iterations WHERE status = 'accepted' ORDER BY params_after ASC LIMIT 1"
+                "SELECT * FROM iterations WHERE status IN ('baseline', 'accepted') ORDER BY params_after ASC LIMIT 1"
             ).fetchone()
             if res:
                 col_names = [d[0] for d in cursor.description]
                 return dict(zip(col_names, res))
         return None
+
+    def get_baseline(self) -> Optional[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            res = cursor.execute(
+                "SELECT * FROM iterations WHERE iteration_id = 'baseline' LIMIT 1"
+            ).fetchone()
+            if res:
+                col_names = [d[0] for d in cursor.description]
+                return dict(zip(col_names, res))
+        return None
+
+    def get_all_accepted(self) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            res = cursor.execute(
+                "SELECT * FROM iterations WHERE status IN ('baseline', 'accepted') ORDER BY timestamp ASC"
+            ).fetchall()
+            col_names = [d[0] for d in cursor.description]
+            return [dict(zip(col_names, row)) for row in res]

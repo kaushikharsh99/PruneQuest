@@ -4,8 +4,7 @@ Base pruner interfaces and candidate data structures.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Tuple
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from typing import Dict, Any, List, Optional
 from prunequest.models.base import BaseModelAdapter
 
 
@@ -36,6 +35,11 @@ class BasePruner(ABC):
     """
 
     @abstractmethod
+    def supports(self, adapter: BaseModelAdapter) -> bool:
+        """Check if this pruning backend supports the given model architecture."""
+        pass
+
+    @abstractmethod
     def analyze(self, adapter: BaseModelAdapter, **kwargs) -> Dict[str, Any]:
         """Compute structural redundancy or sensitivity scores."""
         pass
@@ -58,3 +62,14 @@ class BasePruner(ABC):
     ) -> PruningResult:
         """Physically execute the pruning operation on the model."""
         pass
+
+    def estimate_savings(
+        self,
+        adapter: BaseModelAdapter,
+        candidate: PruningCandidate,
+    ) -> Dict[str, Any]:
+        """Estimate parameter and VRAM savings for a candidate."""
+        return {
+            "estimated_params_removed": candidate.estimated_param_reduction,
+            "estimated_vram_mb": (candidate.estimated_param_reduction * 2) / (1024**2),
+        }

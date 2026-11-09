@@ -3,7 +3,6 @@ Unit tests for PruneQuest Python API and CheckpointExporter.
 """
 
 import tempfile
-import pytest
 from pathlib import Path
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM

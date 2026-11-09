@@ -5,7 +5,7 @@ Independent subprocess validation for exported checkpoints.
 import os
 import sys
 import subprocess
-from typing import Tuple, Optional
+from typing import Tuple
 
 
 class SubprocessValidator:

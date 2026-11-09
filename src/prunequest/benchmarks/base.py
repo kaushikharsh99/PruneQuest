@@ -5,7 +5,6 @@ Base benchmark interface and data structures.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
-import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 
@@ -22,11 +21,11 @@ class EvaluationResult:
     total: int
     correct: int
     accuracy: float
-    records: List[Dict[str, Any]]
-    total_tokens: int
-    total_time_sec: float
-    tokens_per_sec: float
-    peak_vram_gb: float
+    records: List[Dict[str, Any]] = field(default_factory=list)
+    total_tokens: int = 0
+    total_time_sec: float = 0.0
+    tokens_per_sec: float = 0.0
+    peak_vram_gb: float = 0.0
 
 
 class BaseBenchmark(ABC):
@@ -39,7 +38,8 @@ class BaseBenchmark(ABC):
     metric_direction: str = "higher"  # 'higher' or 'lower'
     requires_generation: bool = True
 
-    def __init__(self, seed: int = 42, max_new_tokens: int = 512):
+    def __init__(self, name: str = "benchmark", seed: int = 42, max_new_tokens: int = 512):
+        self.name = name
         self.seed = seed
         self.max_new_tokens = max_new_tokens
         self.data_splits: Dict[str, List[BenchmarkSample]] = {}
@@ -49,18 +49,17 @@ class BaseBenchmark(ABC):
         """Download or load dataset and construct deterministic partitions."""
         pass
 
-    @abstractmethod
     def format_prompt(self, tokenizer: PreTrainedTokenizer, sample: BenchmarkSample) -> str:
         """Construct model-compatible inference prompt."""
-        pass
+        return sample.question
 
-    @abstractmethod
     def verify_answer(self, prediction_text: str, gold_str: str) -> Tuple[bool, str, str]:
         """
         Verify prediction against gold answer.
         Returns: (is_correct, parsed_pred, cleaned_gold).
         """
-        pass
+        is_correct = prediction_text.strip() == gold_str.strip()
+        return is_correct, prediction_text.strip(), gold_str.strip()
 
     @abstractmethod
     def evaluate(

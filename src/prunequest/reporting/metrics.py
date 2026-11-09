@@ -76,6 +76,18 @@ def clean_gpu_memory(device: str = "cuda:0"):
         torch.cuda.ipc_collect()
 
 
+def get_gpu_vram_allocated_gb(device: str = "cuda:0") -> float:
+    """
+    Return currently allocated GPU VRAM in GB.
+    """
+    if not torch.cuda.is_available():
+        return 0.0
+    try:
+        return torch.cuda.memory_allocated(device=device) / (1024**3)
+    except Exception:
+        return 0.0
+
+
 def get_gpu_memory_info(device: str = "cuda:0") -> Dict[str, float]:
     """
     Return currently allocated, reserved, and peak VRAM in GB.

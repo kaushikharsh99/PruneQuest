@@ -66,8 +66,9 @@ Index Synchronization            Importance Scoring               Deterministic 
 
 ### 2.4 Search Strategies (`prunequest.core`)
 - **`GreedySearchStrategy`**: Evaluates candidate layer removals sequentially.
-- **Screening Fast-Path**: Screens candidates on a compact subset before full evaluation, reducing compute time by up to 70%.
-- **Rollback Engine**: In-memory deep copies and disk checkpoints ensure rollback whenever accuracy falls below the retention threshold ($R = \frac{\text{Acc}_{\text{pruned}}}{\text{Acc}_{\text{baseline}}} < \tau$).
+- **Two-Phase Verification**: Screens candidates on a compact subset before full evaluation, reducing compute time by up to 70%. The winning candidate is then evaluated on the full development benchmark split before acceptance.
+- **Rollback & Rejection Engine**: In-memory layer backups and SQLite state logging ensure candidate rejection and rollback whenever accuracy falls below the retention threshold ($R = \frac{\text{Acc}_{\text{pruned}}}{\text{Acc}_{\text{baseline}}} < \tau$) or when subprocess reload validation fails.
+- **Baseline Preservation on Resume**: Resumed experiments query the root baseline record from SQLite, strictly maintaining the unpruned reference performance rather than resetting to an already-pruned model.
 
 ### 2.5 Experiment Tracking & Persistence (`prunequest.core.tracking`)
 - **`ExperimentTracker`**: Manages run directories, logging to both SQLite (`experiments.db`) and streaming JSONL (`run_trace.jsonl`).
