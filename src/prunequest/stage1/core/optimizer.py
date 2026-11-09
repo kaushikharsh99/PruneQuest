@@ -266,7 +266,7 @@ class FLAPOptimizer:
             )
 
             # Check if loss exploded
-            loss_threshold = (self.baseline_loss * 2.5) + 1.0
+            loss_threshold = (self.baseline_loss * self.config.evaluation.screening_loss_factor) + self.config.evaluation.screening_loss_margin
             if screen_res.loss > loss_threshold:
                 # Screening failed
                 PruningStateManager.restore_mlp_weights(self.model, backup, active_channels=self.active_channels)
@@ -362,7 +362,11 @@ class FLAPOptimizer:
             gc.collect()
 
             if self.config.hardware.cpu_offload_validation:
-                reload_ok, reload_msg = CheckpointValidator.validate(ckpt_dir)
+                reload_ok, reload_msg = CheckpointValidator.validate(
+                    ckpt_dir,
+                    max_new_tokens=self.config.evaluation.validation_max_tokens,
+                    prompt=self.config.evaluation.validation_prompt,
+                )
             else:
                 reload_ok, reload_msg = True, "skipped"
 
@@ -431,4 +435,8 @@ class FLAPOptimizer:
             "baseline_params": self.baseline_params,
             "best_checkpoint": best_checkpoint,
             "total_evaluations": evaluations_count,
+            "model_id": self.config.model.model_id,
+            "metric": self.config.flap.metric.upper(),
+            "target": self.config.pruning.target,
+            "benchmark": self.config.evaluation.benchmark.upper(),
         }

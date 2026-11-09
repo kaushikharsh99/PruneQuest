@@ -54,6 +54,10 @@ class EvaluationConfig(BaseModel):
     max_new_tokens: int = 512
     temperature: float = 0.0
     do_sample: bool = False
+    screening_loss_factor: float = Field(default=2.5, description="Loss multiplier threshold for early screening rejection")
+    screening_loss_margin: float = Field(default=1.0, description="Additive loss margin for early screening rejection")
+    validation_max_tokens: int = Field(default=5, description="Number of tokens to generate during reload validation")
+    validation_prompt: str = Field(default="The sum of 10 and 20 is", description="Prompt used to test generation during reload validation")
 
 
 class HardwareConfig(BaseModel):

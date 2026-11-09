@@ -19,6 +19,8 @@ class CheckpointValidator:
         cls,
         checkpoint_dir: str,
         timeout_sec: int = 120,
+        max_new_tokens: int = 5,
+        prompt: str = "The sum of 10 and 20 is",
     ) -> Tuple[bool, str]:
         if not os.path.exists(checkpoint_dir):
             return False, f"Directory does not exist: {checkpoint_dir}"
@@ -30,6 +32,8 @@ try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     path = {repr(checkpoint_dir)}
+    prompt = {repr(prompt)}
+    max_tokens = {int(max_new_tokens)}
     tokenizer = AutoTokenizer.from_pretrained(path)
     model = AutoModelForCausalLM.from_pretrained(
         path,
@@ -37,9 +41,9 @@ try:
         low_cpu_mem_usage=True,
         device_map='cpu'
     )
-    inputs = tokenizer('The sum of 10 and 20 is', return_tensors='pt').to('cpu')
+    inputs = tokenizer(prompt, return_tensors='pt').to('cpu')
     with torch.no_grad():
-        out = model.generate(**inputs, max_new_tokens=5, do_sample=False)
+        out = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
     text = tokenizer.decode(out[0], skip_special_tokens=True)
     params = sum(p.numel() for p in model.parameters())
     print(f"VALIDATION_OK|{{params}}|{{text}}")

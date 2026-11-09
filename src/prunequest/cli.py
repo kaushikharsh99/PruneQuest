@@ -23,6 +23,7 @@ from prunequest.benchmarks.registry import BenchmarkRegistry
 from prunequest.benchmarks.spec import BenchmarkSpecCompiler
 from prunequest.benchmarks.lm_eval import LMEvalBenchmarkAdapter, LM_EVAL_AVAILABLE
 from prunequest.core.controller import SearchController
+from prunequest import __version__
 from prunequest.reporting.reports import ReportGenerator
 from prunequest.core.tracking import ExperimentTracker
 from prunequest.export.validation import SubprocessValidator
@@ -282,7 +283,7 @@ def run(
 ):
     """Execute complete autonomous, benchmark-guided pruning loop."""
     console.print(Panel(
-        f"[bold cyan]PruneQuest v0.2.0 — Universal Pruning Framework[/bold cyan]\n"
+        f"[bold cyan]PruneQuest v{__version__} — Universal Pruning Framework[/bold cyan]\n"
         f"Target: [green]{model}[/green] | Benchmark(s): [yellow]{benchmark}[/yellow] | Min Retention: [magenta]{retain*100:.1f}%[/magenta]"
     ))
 

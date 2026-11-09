@@ -27,16 +27,20 @@ class ReportGenerator:
         orig_acc = summary.get("baseline_accuracy", 0.0) * 100.0
         final_acc = best.get("accuracy", 0.0) * 100.0
         retention = best.get("retention_pct", 100.0)
+        model_name = summary.get("model_id") or (best.get("checkpoint_path") if best else "Unknown Model")
+        metric_name = summary.get("metric", "FLAP (WIFV)")
+        target_name = summary.get("target", "MLP Intermediate Channels")
+        benchmark_name = summary.get("benchmark", "GSM8K")
 
         lines = [
             "# PRUNEQUEST — STAGE 1 RESULTS",
             "",
             "## Executive Summary",
             "",
-            f"- **Model:** {summary.get('model_id', 'Qwen/Qwen2.5-Math-1.5B-Instruct')}",
-            "- **Pruning Method:** FLAP (Fluctuation-based Adaptive Structured Pruning - WIFV)",
-            "- **Target Structure:** MLP Intermediate Channels (SwiGLU Gated Projections)",
-            "- **Acceptance Benchmark:** GSM8K Development Partition",
+            f"- **Model:** {model_name}",
+            f"- **Pruning Method:** FLAP ({metric_name})",
+            f"- **Target Structure:** {target_name}",
+            f"- **Acceptance Benchmark:** {benchmark_name}",
             f"- **Original Parameters:** {orig_params:,}",
             f"- **Final Parameters:** {final_params:,}",
             f"- **Physical Parameter Reduction:** {reduction_pct:.2f}% ({pruned_params/1e6:.2f}M params)",
