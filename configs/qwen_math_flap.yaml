@@ -1,0 +1,54 @@
+model:
+  model_id: Qwen/Qwen2.5-Math-1.5B-Instruct
+  torch_dtype: bfloat16
+  device: cuda:0
+  trust_remote_code: false
+
+calibration:
+  dataset_name: openai/gsm8k
+  dataset_config: main
+  split: train
+  seed: 42
+  num_samples: 128
+  screening_samples: 64
+  acceptance_samples: 512
+  max_length: 512
+  batch_size: 1
+
+flap:
+  metric: wifv
+  standardization: z_score
+  allocation: uniform
+  compensation: none
+
+pruning:
+  target: mlp_intermediate
+  initial_step_ratio: 0.05
+  minimum_step_ratio: 0.006
+  maximum_total_ratio: 0.25
+  adaptive_step: true
+  backoff_factor: 0.5
+  retention: 0.99
+  max_candidate_evaluations: 30
+  time_budget_sec: null
+
+evaluation:
+  benchmark: gsm8k
+  policy: measured
+  batch_size: null
+  max_batch_size: 64
+  max_new_tokens: 512
+  temperature: 0.0
+  do_sample: false
+  screening_loss_factor: 2.5
+  screening_loss_margin: 1.0
+  validation_max_tokens: 5
+  validation_prompt: "The sum of 10 and 20 is"
+
+hardware:
+  max_vram_gb: 5.5
+  clear_cache: true
+  cpu_offload_validation: true
+
+output_dir: runs/qwen_math_flap
+reports_dir: reports

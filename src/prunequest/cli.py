@@ -29,17 +29,21 @@ from prunequest.core.tracking import ExperimentTracker
 from prunequest.export.validation import SubprocessValidator
 from prunequest.reporting.metrics import clean_gpu_memory
 
-from prunequest.stage1.cli import app as stage1_app
+from prunequest.flap.cli import app as flap_app
 
 app = typer.Typer(
     name="prunequest",
-    help="Autonomous, Two-Stage Benchmark-Guided LLM Structural Pruning Framework.",
+    help="Autonomous, Benchmark-Guided LLM Structural Pruning Framework.",
     add_completion=False,
 )
 
-stage2_app = typer.Typer(help="Stage 2: Structured Depth / Layer Pruning Framework.")
-app.add_typer(stage1_app, name="stage1", help="Stage 1: Structured Width / Channel Pruning via FLAP.")
-app.add_typer(stage2_app, name="stage2", help="Stage 2: Structured Depth / Layer Pruning.")
+block_app = typer.Typer(help="Block-based Structured Depth / Layer Pruning Framework.")
+
+app.add_typer(flap_app, name="flap-based", help="FLAP-based Structured Width / Channel Pruning.")
+app.add_typer(flap_app, name="flap", help="Alias for flap-based pruning.")
+
+app.add_typer(block_app, name="block-based", help="Block-based Structured Depth / Layer Pruning.")
+app.add_typer(block_app, name="block", help="Alias for block-based pruning.")
 
 benchmarks_app = typer.Typer(help="Discover, inspect, and validate benchmarks.")
 app.add_typer(benchmarks_app, name="benchmarks")
@@ -106,7 +110,7 @@ def doctor():
 
 
 @app.command()
-@stage2_app.command(name="inspect")
+@block_app.command(name="inspect")
 def inspect(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m", help="Hugging Face model ID or directory"),
     load_weights: bool = typer.Option(False, "--load-weights", help="Load full weights to inspect actual tensors"),
@@ -235,7 +239,7 @@ def preview_benchmark_spec(
 
 
 @app.command()
-@stage2_app.command(name="baseline")
+@block_app.command(name="baseline")
 def baseline(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
@@ -268,7 +272,7 @@ def baseline(
 
 
 @app.command()
-@stage2_app.command(name="run")
+@block_app.command(name="run")
 def run(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m", help="Pretrained model ID or path"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
@@ -334,7 +338,7 @@ def run(
 
 
 @app.command()
-@stage2_app.command(name="resume")
+@block_app.command(name="resume")
 def resume(
     run_dir: str = typer.Argument(..., help="Path to previous run directory containing experiments.db"),
 ):
@@ -356,7 +360,7 @@ def resume(
 
 
 @app.command()
-@stage2_app.command(name="report")
+@block_app.command(name="report")
 def report(
     run_dir: str = typer.Argument(..., help="Path to run directory containing experiments.db"),
     output: str = typer.Option("reports", "--output", "-o", help="Directory to save report and plots"),
@@ -388,7 +392,7 @@ def report(
 
 
 @app.command()
-@stage2_app.command(name="export")
+@block_app.command(name="export")
 def export(
     checkpoint: str = typer.Argument(..., help="Path to source checkpoint"),
     output: str = typer.Option(..., "--output", "-o", help="Target output directory"),
@@ -411,6 +415,88 @@ def export(
         else:
             console.print(f"[bold red]✘ Subprocess reload validation FAILED: {msg}[/bold red]")
             raise typer.Exit(1)
+
+
+@app.command(name="full-sweep")
+@app.command(name="full-pass")
+def full_sweep(
+    config: str = typer.Option("configs/full_sweep.yaml", "--config", "-c", help="Path to full sweep config YAML"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Target model ID or path override"),
+    retain: Optional[float] = typer.Option(None, "--retain", "-r", help="Target retention ratio override (e.g. 0.99)"),
+    max_iterations: Optional[int] = typer.Option(None, "--max-iterations", "-i", help="Maximum joint pruning iterations"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Evaluation batch size override"),
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Inference device override"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory override"),
+    flap_step: Optional[float] = typer.Option(None, "--flap-step", "-s", help="Initial FLAP step ratio override (e.g. 0.05)"),
+):
+    """Execute complete Full Sweep / Full Pass combining FLAP-based and Block-based pruning via JIPO."""
+    from prunequest.sweep.config import JointSweepConfig
+    from prunequest.sweep.optimizer import JointIncrementalOptimizer
+
+    cfg = JointSweepConfig.from_yaml(config)
+    if model is not None:
+        cfg.model.model_id = model
+    if retain is not None:
+        cfg.pruning.retention = retain
+    if max_iterations is not None:
+        cfg.pruning.max_iterations = max_iterations
+    if batch_size is not None:
+        cfg.evaluation.batch_size = batch_size
+    if device is not None:
+        cfg.model.device = device
+    if output is not None:
+        cfg.output_dir = output
+    if flap_step is not None:
+        cfg.pruning.initial_flap_ratio = flap_step
+
+    console.print(Panel(
+        f"[bold cyan]PruneQuest Joint Incremental Pruning Optimizer (JIPO) — Full Sweep[/bold cyan]\n"
+        f"Target: [green]{cfg.model.model_id}[/green] | Min Retention: [magenta]{cfg.pruning.retention*100:.1f}%[/magenta]\n"
+        f"Initial FLAP Step: [yellow]{cfg.pruning.initial_flap_ratio*100:.1f}%[/yellow] | Max Blocks: [yellow]{cfg.pruning.max_block_removals}[/yellow] | Output: [green]{cfg.output_dir}[/green]"
+    ))
+
+    optimizer = JointIncrementalOptimizer(cfg)
+    with console.status("[bold green]Loading model and initializing dataset partitions...[/bold green]"):
+        optimizer.initialize()
+
+    console.print("[bold blue]Establishing unpruned baseline...[/bold blue]")
+    baseline_rec = optimizer.run_baseline()
+    console.print(f"[bold green]✔ Baseline Established:[/bold green] Accuracy: {baseline_rec['accuracy']*100:.2f}% | Loss: {baseline_rec['screening_loss']:.4f} | Params: {baseline_rec['params_before']/1e6:.2f}M")
+
+    console.print("[bold cyan]Launching Joint Multi-Fidelity Pruning Search...[/bold cyan]")
+    summary = optimizer.optimize()
+
+    # Display Summary Table
+    table = Table(title="[bold green]JIPO Full Sweep Execution Summary[/bold green]")
+    table.add_column("Result Field", style="cyan")
+    table.add_column("Value", style="magenta")
+
+    table.add_row("Status", str(summary.get("status")))
+    table.add_row("Stopping Reason", str(summary.get("stopping_reason")))
+    table.add_row("Baseline Accuracy", f"{summary.get('baseline_accuracy', 0.0)*100:.2f}%")
+    table.add_row("Baseline Parameters", f"{summary.get('baseline_params', 0):,}")
+
+    best = summary.get("best_checkpoint")
+    if best:
+        table.add_row("Final Compressed Parameters", f"{best.get('params_after', 0):,}")
+        pruned_cnt = summary.get("baseline_params", 0) - best.get("params_after", 0)
+        table.add_row("Total Parameters Pruned", f"{pruned_cnt:,} ({pruned_cnt/1e6:.2f}M)")
+        table.add_row("Final Accuracy", f"{best.get('accuracy', 0.0)*100:.2f}%")
+        table.add_row("Accuracy Retention", f"{best.get('accuracy_retention_pct', 100.0):.2f}%")
+        table.add_row("Best Pareto Checkpoint", str(best.get("checkpoint_path")))
+    else:
+        table.add_row("Best Pareto Checkpoint", "None accepted")
+
+    metrics = summary.get("metrics", {})
+    table.add_row("Blocks Removed", str(summary.get("total_blocks_removed", 0)))
+    table.add_row("Total FLAP Ratio Applied", f"{summary.get('total_flap_ratio_applied', 0.0)*100:.2f}%")
+    table.add_row("Total Full Evaluations Executed", str(metrics.get("full_evaluations_executed", 0)))
+    table.add_row("Evaluations Saved by Joint Grouping", f"[bold green]{metrics.get('evaluations_saved_by_joint', 0)}[/bold green]")
+    table.add_row("Evaluations Saved by Cheap Screening", f"[bold green]{metrics.get('evaluations_saved_by_screening', 0)}[/bold green]")
+    table.add_row("Total Evaluations Saved", f"[bold green]{metrics.get('total_evaluations_saved', 0)}[/bold green]")
+    table.add_row("Pareto Frontier Checkpoints", str(metrics.get("pareto_points", 0)))
+
+    console.print(table)
 
 
 if __name__ == "__main__":

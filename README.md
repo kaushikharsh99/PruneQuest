@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/banner.png" alt="PruneQuest Banner" width="100%">
+</p>
+
 # PruneQuest: Universal Benchmark-Driven LLM Pruning Framework
 
 [![CI](https://github.com/kaushikharsh99/PruneQuest/actions/workflows/tests.yml/badge.svg)](https://github.com/kaushikharsh99/PruneQuest/actions)
@@ -87,13 +91,24 @@ flowchart TD
 ```bash
 git clone https://github.com/kaushikharsh99/PruneQuest.git
 cd PruneQuest
+
+# Standard installation (CLI + core pruning framework)
 pip install -e .
+
+# Optional: with dev (pytest, ruff) and evaluation (lm-eval) suites
+pip install -e ".[dev,eval]"
 ```
 
 ### 2. Verify Your Environment
 
+Run system diagnostics to verify PyTorch, CUDA, and library dependencies (supports both GPU and CPU-only devices):
+
 ```bash
+# General environment check
 prunequest doctor
+
+# FLAP-specific hardware diagnostics
+prunequest flap doctor
 ```
 
 ### 3. Inspect Target Model
@@ -101,6 +116,9 @@ prunequest doctor
 ```bash
 prunequest inspect --model meta-llama/Llama-3.2-1B-Instruct
 prunequest inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
+
+# Or inspect SwiGLU MLP channel dimensions directly via FLAP
+prunequest flap inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
 ```
 
 ### 4. Discover Benchmarks
@@ -119,27 +137,51 @@ prunequest benchmarks info gsm8k
 
 ### 5. Launch Pruning Search
 
-#### Stage 1: Structured Width / MLP Channel Pruning (FLAP)
+#### FLAP-Based: Structured Width / MLP Channel Pruning
 Fluctuation-based Adaptive Structured Pruning on SwiGLU MLP intermediate projections with automatic step-back halving ($5\% \to 2.5\% \to 1.25\% \to 0.6125\%$) and VRAM-aware batched evaluation (up to batch size 64):
 ```bash
-# Using prunequest CLI
-prunequest stage1 optimize --config configs/qwen_math_stage1.yaml
+# 1. Profile FLAP layer importance scores
+prunequest flap profile --config configs/qwen_math_flap.yaml
 
-# Or using the stage1 direct alias
-stage1 optimize --config configs/qwen_math_stage1.yaml --batch-size 32
+# 2. Run incremental width pruning optimization
+prunequest flap-based optimize --config configs/qwen_math_flap.yaml --batch-size 32
+
+# 3. Resume interrupted search from last accepted checkpoint
+prunequest flap resume --config configs/qwen_math_flap.yaml
+
+# 4. Evaluate exported checkpoint on GSM8K
+prunequest flap test --checkpoint runs/qwen_math_flap/best --split test
 ```
 
-#### Stage 2: Structured Depth / Layer Pruning
+#### Block-Based: Structured Depth / Layer Pruning
 Autonomous search controller pruning redundant transformer blocks based on Block Influence hidden state cosine distance:
 ```bash
 # Multi-benchmark pruning search with 99% retention target
-prunequest stage2 run \
+prunequest block-based run \
     --model Qwen/Qwen2.5-Math-1.5B-Instruct \
     --benchmark gsm8k \
     --retain 0.99 \
     --max-iterations 3 \
     --split smoke \
-    --output ./runs/qwen_stage2_run
+    --output ./runs/qwen_block_run
+
+# Or inspect model layer rankings using the 'block' alias
+prunequest block inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
+```
+
+#### Full Sweep / Full Pass Pruning (JIPO)
+Joint Incremental Pruning Optimizer (JIPO) dynamically unifies structured depth (Block Influence layer excision) and width (FLAP MLP intermediate channel slicing) pruning into a progressive 3-level search:
+- **Level 1 (Cheap Importance Profiling)**: Calculates Block Influence scores and FLAP channel statistics using calibration forward passes without generating answers; profiles are cached and selectively invalidated on structural modifications.
+- **Level 2 (Cheap Combined Screening)**: Slices candidate channels and layer in-memory and screens teacher-forced loss on a small calibration-independent subset before invoking full benchmarks.
+- **Level 3 (Adaptive Multi-Benchmark Validation)**: Validates surviving joint candidates against full accuracy retention constraints. If the joint candidate passes, both operations are accepted and committed; if it fails, single-operation alternatives ($C_2 = M \setminus \{B\}$ and $C_3 = M \setminus \{F\}$) are evaluated based on utility score $U(C) = \frac{\Delta\text{Bytes}}{\epsilon + \text{Loss}}$.
+- **Pareto Tracking & SQLite Persistence**: Tracks the multi-dimensional Pareto frontier of accuracy vs. parameter reduction, logs evaluations saved, and automatically exports the dominant checkpoint.
+
+```bash
+# Execute Joint Incremental Pruning Optimizer
+prunequest full-sweep --config configs/full_sweep.yaml
+
+# Or using the alias:
+prunequest full-pass --config configs/full_sweep.yaml
 ```
 
 ### 6. Python API Example
@@ -199,8 +241,12 @@ prunequest benchmarks preview --spec benchmark.yaml --limit 3
 ```
 PruneQuest/
 |-- .github/workflows/tests.yml   # Automated GitHub Actions CI workflow
-|-- configs/default.yaml          # Pydantic-validated default configuration
+|-- configs/                      # Pydantic-validated default & FLAP configs
+|   |-- default.yaml
+|   |-- qwen_math_flap.yaml
+|   `-- full_sweep.yaml
 |-- docs/                         # Comprehensive documentation suite
+|   |-- assets/banner.png         # Project header banner
 |   |-- architecture.md           # Modular subsystem design & rollback engine
 |   |-- benchmarks.md             # Benchmark protocol & LM-Eval integration
 |   |-- compatibility.md          # Multi-architecture capability matrix
@@ -216,8 +262,27 @@ PruneQuest/
 |   |-- export/                   # Safetensors exporter & reload validation
 |   |-- models/                   # Discovery, decoder surgery, Qwen2, Llama, Mistral, Gemma, Phi
 |   |-- pruning/                  # Block Influence scoring & pruner registry
-|   `-- reporting/                # Plot generation & Markdown summaries
-|-- tests/                        # Comprehensive unit & integration test suite
+|   |-- reporting/                # Plot generation & Markdown summaries
+|   |-- flap/                     # FLAP-based incremental structured MLP pruning
+|   |   |-- calibration/          # Streaming token activation collector & GSM8K loader
+|   |   |-- metrics.py            # FLAP importance metrics (WIFV / WIFN)
+|   |   |-- standardization.py    # Cross-layer score standardization
+|   |   |-- allocation.py         # Uniform & global adaptive channel allocation
+|   |   |-- compensation.py       # Downstream bias compensation
+|   |   |-- pruning/              # Physical tensor slicing & channel removal
+|   |   |-- evaluation/           # Proxy loss screening & GSM8K math-verify
+|   |   |-- core/                 # Adaptive step optimizer & trial tracker
+|   |   `-- export/               # Clean HF safetensors exporter & validator
+|   `-- sweep/                    # JIPO joint incremental pruning optimizer
+|       |-- config.py             # Sweep configuration schema
+|       |-- state.py              # In-memory atomic snapshot & transactional rollback
+|       |-- tracker.py            # SQLite tracker with Pareto frontier analysis
+|       `-- optimizer.py          # 3-level progressive search optimizer
+|-- tests/                        # Comprehensive unit & integration test suite (60 tests)
+|   |-- flap/                     # FLAP width pruning test suite (10 tests)
+|   |-- sweep/                    # Joint sweep optimizer test suite (4 tests)
+|   |-- unit/                     # Block-based pruning & core unit tests (42 tests)
+|   `-- integration/              # CLI integration tests (4 tests)
 |-- LICENSE                       # Apache-2.0 License
 |-- pyproject.toml                # Standard PEP 517/621 packaging metadata
 `-- README.md                     # Framework documentation & empirical results
@@ -230,7 +295,8 @@ PruneQuest/
 - [x] **v0.1.0**: Initial foundational release (Qwen2 adapter, layer pruning, Block Influence, GSM8K, Typer CLI, SQLite tracking).
 - [x] **v0.1.1**: Reliability & Benchmark Correctness (Two-phase candidate screening and dev benchmark validation, baseline preservation on resume, subprocess reload validation rejection safeguards, strict Ruff CI pass, expanded offline unit testing suite).
 - [x] **v0.2.0**: Universal LLM Pruning Framework (ModelInspector architecture discovery, 4 capability tiers, LLaMA-2/3, Mistral, Gemma, and Phi adapters, LM Evaluation Harness integration with 14,222+ tasks, declarative YAML BenchmarkSpec compiler, directional MetricSpec and multi-benchmark ConstraintSuite).
-- [ ] **v0.3.0**: Automated Granular Pruning: MLP intermediate channel slicing, attention head pruning with dynamic projection recalculation, and multi-GPU DDP search support.
+- [x] **v0.3.0**: Granular MLP Width Pruning: FLAP-based SwiGLU intermediate channel slicing, proxy screening, adaptive step-back halving, and VRAM-conscious batched GSM8K evaluation.
+- [ ] **v0.4.0**: Granular Head Pruning: Multi-head / Grouped-query attention head pruning with dynamic projection recalculation and multi-GPU DDP search support.
 
 ---
 

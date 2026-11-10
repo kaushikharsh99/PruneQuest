@@ -53,7 +53,7 @@ eval = [
 
 [project.scripts]
 prunequest = "prunequest.cli:app"
-stage1 = "prunequest.stage1.cli:app"
+flap = "prunequest.flap.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/kaushikharsh99/PruneQuest"
