@@ -3,8 +3,18 @@ PruneQuest Command-Line Interface (Typer + Rich).
 """
 
 import os
+import sys
+import signal
+import platform
 from typing import Optional
+
+# Prevent BrokenPipeError / Python traceback when piping CLI output to head, tail, or grep
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except (AttributeError, ValueError):
+    pass
 import typer
+import click
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -54,57 +64,82 @@ console = Console()
 @app.command()
 def version():
     """Display PruneQuest version and core system information."""
-    from prunequest import __version__
     console.print(f"[bold cyan]PruneQuest[/bold cyan] version [bold green]v{__version__}[/bold green]")
 
 
 @app.command()
 def doctor():
-    """Verify hardware environment, PyTorch, CUDA, and dependencies."""
+    """Verify hardware environment, PyTorch, CUDA, memory, and dependencies."""
     table = Table(title="[bold blue]PruneQuest Environment Diagnostics[/bold blue]")
     table.add_column("Component", style="cyan")
     table.add_column("Status / Value", style="magenta")
 
-    table.add_row("CUDA Available", f"[green]{torch.cuda.is_available()}[/green]")
-    if torch.cuda.is_available():
+    # Platform & Python
+    table.add_row("Python Version", f"{platform.python_version()} ({sys.executable})")
+    table.add_row("Operating System", f"{platform.system()} {platform.release()} ({platform.machine()})")
+    table.add_row("PyTorch Version", str(torch.__version__))
+
+    # CUDA & GPU Diagnostics
+    cuda_available = torch.cuda.is_available()
+    table.add_row("CUDA Available", f"[green]{cuda_available}[/green]" if cuda_available else "[yellow]False (CPU Mode)[/yellow]")
+    if cuda_available:
         table.add_row("Device Name", torch.cuda.get_device_name(0))
         table.add_row("Device Count", str(torch.cuda.device_count()))
         free_mem, total_mem = torch.cuda.mem_get_info()
         table.add_row("Free VRAM", f"{free_mem / (1024**3):.2f} GB")
         table.add_row("Total VRAM", f"{total_mem / (1024**3):.2f} GB")
-        table.add_row("CUDA Version", str(torch.version.cuda))
+        table.add_row("CUDA Runtime Version", str(torch.version.cuda))
     else:
-        table.add_row("Device Name", "[yellow]CPU Only[/yellow]")
+        table.add_row("Hardware Mode", "[yellow]CPU Only (Compatible with architecture discovery, CPU validation, and lightweight unit testing)[/yellow]")
 
-    deps = [
-        "torch",
+    # Core Dependencies
+    core_deps = [
         "transformers",
         "accelerate",
         "safetensors",
         "datasets",
         "math_verify",
-        "lm_eval",
         "pydantic",
         "rich",
         "typer",
     ]
-    for pkg in deps:
+    for pkg in core_deps:
         try:
             m = __import__(pkg)
             v = getattr(m, "__version__", "Installed")
-            table.add_row(f"Dependency: {pkg}", f"[green]{v}[/green]")
+            table.add_row(f"Core Dep: {pkg}", f"[green]{v}[/green]")
         except ImportError:
-            table.add_row(f"Dependency: {pkg}", "[yellow]Not Installed[/yellow]")
+            table.add_row(f"Core Dep: {pkg}", "[red]Not Installed[/red]")
 
+    # Optional Evaluation Extras
     if LM_EVAL_AVAILABLE:
         try:
+            import lm_eval
+            v = getattr(lm_eval, "__version__", "Installed")
+            table.add_row("Optional Extra: lm-eval", f"[green]{v} (Evaluation extra active)[/green]")
             task_count = len(LMEvalBenchmarkAdapter.list_available_tasks())
-            table.add_row("LM-Eval Tasks Discovered", f"[green]{task_count:,} tasks[/green]")
+            table.add_row("LM-Eval Tasks Discovered", f"[green]{task_count:,} tasks available[/green]")
         except Exception:
-            table.add_row("LM-Eval Tasks Discovered", "[yellow]Failed to enumerate[/yellow]")
+            table.add_row("Optional Extra: lm-eval", "[green]Installed[/green]")
+    else:
+        table.add_row(
+            "Optional Extra: lm-eval",
+            "[yellow]Not Installed (Optional: install with pip install 'prunequest[eval]')[/yellow]"
+        )
 
-    table.add_row("Supported Model Families", "Qwen2/2.5, Llama-2/3, Mistral, Gemma, Phi")
-    table.add_row("Default Pruning Backend", "Block Influence Transformer Layer Pruner")
+    # Writable Directories
+    cwd_writable = os.access(".", os.W_OK)
+    table.add_row("Workspace Directory", f"{os.path.abspath('.')} ([green]Writable[/green]" if cwd_writable else "[red]Read-Only[/red])")
+
+    hf_cache = os.path.expanduser("~/.cache/huggingface")
+    os.makedirs(hf_cache, exist_ok=True)
+    hf_writable = os.access(hf_cache, os.W_OK)
+    table.add_row("Hugging Face Cache", f"{hf_cache} ([green]Writable[/green]" if hf_writable else "[red]Read-Only[/red])")
+
+    # Capability Matrix Summary
+    table.add_row("Verified Model Architectures", "Qwen2 / 2.5 (Level 3), Llama 2 / 3 (Level 3), Mistral (Level 3)")
+    table.add_row("Experimental Architectures", "Gemma / Gemma-2 (Level 2), Phi-2 / Phi-3 (Level 2)")
+    table.add_row("Supported Pruning Methods", "Block Influence (Layer), FLAP (MLP Intermediate), JIPO (Full Sweep)")
 
     console.print(table)
 
@@ -156,7 +191,9 @@ def inspect(
 
 
 @benchmarks_app.command("list")
-def list_benchmarks_cmd():
+def list_benchmarks_cmd(
+    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit number of benchmarks displayed"),
+):
     """List native benchmarks and popular evaluation tasks."""
     bench_list = BenchmarkRegistry.list_benchmarks()
     table = Table(title="[bold blue]Supported Benchmark Adapters[/bold blue]")
@@ -165,7 +202,11 @@ def list_benchmarks_cmd():
     table.add_column("Metric", style="green")
     table.add_column("Direction", style="yellow")
 
-    for name, props in bench_list.items():
+    items = list(bench_list.items())
+    if limit is not None and limit > 0:
+        items = items[:limit]
+
+    for name, props in items:
         table.add_row(
             name,
             props.get("source", "native"),
@@ -206,26 +247,49 @@ def info_benchmark_cmd(task_name: str = typer.Argument(..., help="Task name to i
 
 
 @benchmarks_app.command("validate")
-def validate_benchmark_spec(spec_file: str = typer.Argument(..., help="Path to BenchmarkSpec YAML file")):
+def validate_benchmark_spec(
+    spec_file: Optional[str] = typer.Argument(None, help="Path to BenchmarkSpec YAML file"),
+    spec: Optional[str] = typer.Option(None, "--spec", "-s", help="Path to BenchmarkSpec YAML file"),
+):
     """Validate a declarative BenchmarkSpec YAML file."""
-    valid, errors = BenchmarkSpecCompiler.validate_spec(spec_file)
+    path = spec or spec_file
+    if not path:
+        console.print("[bold red]Error: Missing benchmark specification file. Provide as argument or via --spec.[/bold red]")
+        raise typer.Exit(1)
+    if not os.path.exists(path):
+        console.print(f"[bold red]Error: Specification file not found: {path}[/bold red]")
+        raise typer.Exit(1)
+
+    valid, errors = BenchmarkSpecCompiler.validate_spec(path)
     if valid:
-        console.print(f"[bold green]✔ Specification '{spec_file}' is valid![/bold green]")
+        console.print(f"[bold green]✔ Specification '{path}' is valid![/bold green]")
     else:
-        console.print(f"[bold red]✘ Specification '{spec_file}' is invalid:[/bold red]")
+        console.print(f"[bold red]✘ Specification '{path}' is invalid:[/bold red]")
         for err in errors:
             console.print(f"  - {err}")
+        raise typer.Exit(1)
 
 
 @benchmarks_app.command("preview")
 def preview_benchmark_spec(
-    spec_file: str = typer.Argument(..., help="Path to BenchmarkSpec YAML file"),
+    spec_file: Optional[str] = typer.Argument(None, help="Path to BenchmarkSpec YAML file"),
+    spec: Optional[str] = typer.Option(None, "--spec", "-s", help="Path to BenchmarkSpec YAML file"),
     count: int = typer.Option(3, "--count", "-n", help="Number of preview samples"),
+    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Alias for --count"),
 ):
     """Preview rendered prompts and target extraction for a BenchmarkSpec."""
+    path = spec or spec_file
+    if not path:
+        console.print("[bold red]Error: Missing benchmark specification file. Provide as argument or via --spec.[/bold red]")
+        raise typer.Exit(1)
+    if not os.path.exists(path):
+        console.print(f"[bold red]Error: Specification file not found: {path}[/bold red]")
+        raise typer.Exit(1)
+
+    effective_count = limit if limit is not None else count
     try:
-        samples = BenchmarkSpecCompiler.preview_spec(spec_file, count=count)
-        table = Table(title=f"[bold blue]Benchmark Preview: {spec_file}[/bold blue]")
+        samples = BenchmarkSpecCompiler.preview_spec(path, count=effective_count)
+        table = Table(title=f"[bold blue]Benchmark Preview: {path}[/bold blue]")
         table.add_column("ID", style="cyan")
         table.add_column("Rendered Prompt", style="white")
         table.add_column("Gold Target", style="green")
@@ -235,7 +299,8 @@ def preview_benchmark_spec(
 
         console.print(table)
     except Exception as e:
-        console.print(f"[bold red]Failed to preview '{spec_file}': {e}[/bold red]")
+        console.print(f"[bold red]Failed to preview '{path}': {e}[/bold red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -243,17 +308,17 @@ def preview_benchmark_spec(
 def baseline(
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
-    split: str = typer.Option("smoke", "--split", "-s", help="smoke, screening, dev, or full"),
+    split: str = typer.Option("dev", "--split", "-s", help="dev, acceptance, smoke, screening, or test"),
     samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Sample count limit"),
     device: str = typer.Option("cuda:0", "--device", "-d"),
-    output: str = typer.Option("runs/prunequest_baseline", "--output", "-o"),
+    output: str = typer.Option("runs/prunequest_baseline", "--output", "--output-dir", "-o"),
 ):
     """Evaluate original unpruned model across one or more benchmarks."""
     console.print(Panel(f"[bold cyan]Establishing Baseline for {model} on {benchmark} ({split} split)[/bold cyan]"))
 
     cfg = PruneQuestConfig(
         model=ModelConfig(model_id=model, device=device),
-        benchmark=BenchmarkConfig(name=benchmark, split=split, smoke_size=samples or 16, sample_limit=samples),
+        benchmark=BenchmarkConfig(name=benchmark, split=split, sample_limit=samples),
         output_dir=output,
     )
     controller = SearchController(cfg)
@@ -274,33 +339,69 @@ def baseline(
 @app.command()
 @block_app.command(name="run")
 def run(
+    ctx: typer.Context,
     model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m", help="Pretrained model ID or path"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
     retain: float = typer.Option(0.99, "--retain", "-r", help="Minimum accuracy retention ratio [0.0 - 1.0]"),
     max_iterations: int = typer.Option(3, "--max-iterations", "-i", help="Maximum pruning iterations"),
-    split: str = typer.Option("smoke", "--split", "-s", help="smoke, dev, or full"),
-    samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Sample limit for benchmark evaluation (e.g. 1000)"),
-    output: str = typer.Option("runs/prunequest_run", "--output", "-o", help="Run directory"),
+    split: str = typer.Option("dev", "--split", "-s", help="dev, acceptance, smoke, or test"),
+    samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Sample limit for benchmark evaluation"),
+    output: str = typer.Option("runs/prunequest_run", "--output", "--output-dir", "-o", help="Run directory"),
     reports: str = typer.Option("reports", "--reports", help="Reports directory"),
     device: str = typer.Option("cuda:0", "--device", "-d", help="Inference device"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config YAML"),
 ):
     """Execute complete autonomous, benchmark-guided pruning loop."""
-    console.print(Panel(
-        f"[bold cyan]PruneQuest v{__version__} — Universal Pruning Framework[/bold cyan]\n"
-        f"Target: [green]{model}[/green] | Benchmark(s): [yellow]{benchmark}[/yellow] | Min Retention: [magenta]{retain*100:.1f}%[/magenta]"
-    ))
-
+    # Enforce Precedence: Explicit CLI Overrides > Configuration File > Application Defaults
     if config and os.path.exists(config):
         cfg = PruneQuestConfig.from_yaml(config)
+        if ctx.get_parameter_source("model") == click.core.ParameterSource.COMMANDLINE:
+            cfg.model.model_id = model
+        if ctx.get_parameter_source("device") == click.core.ParameterSource.COMMANDLINE:
+            cfg.model.device = device
+        if ctx.get_parameter_source("benchmark") == click.core.ParameterSource.COMMANDLINE:
+            cfg.benchmark.name = benchmark
+        if ctx.get_parameter_source("split") == click.core.ParameterSource.COMMANDLINE:
+            cfg.benchmark.split = split
+        if ctx.get_parameter_source("samples") == click.core.ParameterSource.COMMANDLINE:
+            cfg.benchmark.sample_limit = samples
+        if ctx.get_parameter_source("retain") == click.core.ParameterSource.COMMANDLINE:
+            cfg.pruning.retain = retain
+        if ctx.get_parameter_source("max_iterations") == click.core.ParameterSource.COMMANDLINE:
+            cfg.pruning.max_iterations = max_iterations
+        if ctx.get_parameter_source("output") == click.core.ParameterSource.COMMANDLINE:
+            cfg.output_dir = output
+        if ctx.get_parameter_source("reports") == click.core.ParameterSource.COMMANDLINE:
+            cfg.reports_dir = reports
     else:
         cfg = PruneQuestConfig(
             model=ModelConfig(model_id=model, device=device),
-            benchmark=BenchmarkConfig(name=benchmark, split=split, smoke_size=samples or 16, sample_limit=samples),
+            benchmark=BenchmarkConfig(name=benchmark, split=split, sample_limit=samples),
             pruning=PruningConfig(retain=retain, max_iterations=max_iterations),
             output_dir=output,
             reports_dir=reports,
         )
+
+    # Safe Defaults Inspection and User Guidance
+    if cfg.benchmark.split == "smoke" or (cfg.benchmark.sample_limit and cfg.benchmark.sample_limit <= 32):
+        console.print(
+            f"[bold yellow]Warning: This run uses only {cfg.benchmark.sample_limit or cfg.benchmark.smoke_size} examples "
+            f"({cfg.benchmark.split} split).\nThis is suitable for a smoke test, not for reliable accuracy-retention claims.[/bold yellow]\n"
+        )
+
+    # Save Resolved Configuration for Reproducibility
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    resolved_path = os.path.join(cfg.output_dir, "resolved_config.yaml")
+    cfg.to_yaml(resolved_path)
+
+    effective_eval_size = cfg.benchmark.sample_limit or (cfg.benchmark.dev_size if cfg.benchmark.split == "dev" else cfg.benchmark.smoke_size)
+    console.print(Panel(
+        f"[bold cyan]PruneQuest v{__version__} — Block Influence Pruning[/bold cyan]\n"
+        f"Model: [green]{cfg.model.model_id}[/green] | Method: [yellow]Block Influence[/yellow]\n"
+        f"Benchmark: [yellow]{cfg.benchmark.name}[/yellow] (Split: [magenta]{cfg.benchmark.split}[/magenta], Samples: [magenta]{effective_eval_size}[/magenta])\n"
+        f"Retention Target: [magenta]{cfg.pruning.retain * 100:.1f}%[/magenta] | Device: [cyan]{cfg.model.device}[/cyan] | Output: [green]{cfg.output_dir}[/green]\n"
+        f"Resolved Config: [dim]{resolved_path}[/dim]"
+    ))
 
     controller = SearchController(cfg)
 
@@ -312,7 +413,7 @@ def run(
     res = controller.run(progress_callback=on_step)
 
     df = controller.tracker.get_history_dataframe()
-    reporter = ReportGenerator(reports)
+    reporter = ReportGenerator(cfg.reports_dir)
     plots = reporter.generate_plots(df)
     report_file = reporter.generate_report(df, res, plots)
 
@@ -333,6 +434,7 @@ def run(
     summary_table.add_row("Iterations Completed", str(res["iterations_completed"]))
     summary_table.add_row("Best Exported Checkpoint", str(res["best_checkpoint"]))
     summary_table.add_row("Report Path", report_file)
+    summary_table.add_row("Resolved Config Saved", resolved_path)
 
     console.print(summary_table)
 
@@ -345,15 +447,29 @@ def resume(
     """Resume an interrupted pruning search from the last valid checkpoint."""
     console.print(Panel(f"[bold cyan]Resuming PruneQuest Search from:[/bold cyan] {run_dir}"))
 
+    if not os.path.exists(run_dir):
+        console.print(f"[bold red]Run directory does not exist: {run_dir}[/bold red]")
+        raise typer.Exit(1)
+
     tracker = ExperimentTracker(run_dir)
     latest = tracker.get_latest_accepted()
     if not latest:
         console.print("[bold red]No accepted checkpoints found in run directory to resume from.[/bold red]")
         raise typer.Exit(1)
 
-    cfg = PruneQuestConfig(output_dir=run_dir)
+    # Load resolved config if available, otherwise reconstruct
+    resolved_cfg_file = os.path.join(run_dir, "resolved_config.yaml")
+    if os.path.exists(resolved_cfg_file):
+        cfg = PruneQuestConfig.from_yaml(resolved_cfg_file)
+    else:
+        cfg = PruneQuestConfig(output_dir=run_dir)
+
     controller = SearchController(cfg, tracker=tracker)
-    res = controller.resume()
+    try:
+        res = controller.resume()
+    except Exception as e:
+        console.print(f"[bold red]Failed to resume search: {e}[/bold red]")
+        raise typer.Exit(1)
 
     console.print("[bold green]✔ Resumed run finished successfully![/bold green]")
     console.print(f"Final params: {res['final_params']:,} | Final accuracy: {res['final_accuracy']*100:.2f}%")
@@ -420,6 +536,7 @@ def export(
 @app.command(name="full-sweep")
 @app.command(name="full-pass")
 def full_sweep(
+    ctx: typer.Context,
     config: str = typer.Option("configs/full_sweep.yaml", "--config", "-c", help="Path to full sweep config YAML"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Target model ID or path override"),
     retain: Optional[float] = typer.Option(None, "--retain", "-r", help="Target retention ratio override (e.g. 0.99)"),
@@ -435,6 +552,7 @@ def full_sweep(
     from prunequest.sweep.optimizer import JointIncrementalOptimizer
 
     cfg = JointSweepConfig.from_yaml(config)
+    # Apply explicit CLI overrides
     if model is not None:
         cfg.model.model_id = model
     if retain is not None:
@@ -450,10 +568,16 @@ def full_sweep(
     if flap_step is not None:
         cfg.pruning.initial_flap_ratio = flap_step
 
+    # Save Resolved Configuration
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    resolved_path = os.path.join(cfg.output_dir, "resolved_config.yaml")
+    cfg.to_yaml(resolved_path)
+
     console.print(Panel(
         f"[bold cyan]PruneQuest Joint Incremental Pruning Optimizer (JIPO) — Full Sweep[/bold cyan]\n"
         f"Target: [green]{cfg.model.model_id}[/green] | Min Retention: [magenta]{cfg.pruning.retention*100:.1f}%[/magenta]\n"
-        f"Initial FLAP Step: [yellow]{cfg.pruning.initial_flap_ratio*100:.1f}%[/yellow] | Max Blocks: [yellow]{cfg.pruning.max_block_removals}[/yellow] | Output: [green]{cfg.output_dir}[/green]"
+        f"Initial FLAP Step: [yellow]{cfg.pruning.initial_flap_ratio*100:.1f}%[/yellow] | Max Blocks: [yellow]{cfg.pruning.max_block_removals}[/yellow] | Output: [green]{cfg.output_dir}[/green]\n"
+        f"Resolved Config Saved: [dim]{resolved_path}[/dim]"
     ))
 
     optimizer = JointIncrementalOptimizer(cfg)
@@ -496,9 +620,22 @@ def full_sweep(
     table.add_row("Evaluations Saved by Cheap Screening", f"[bold green]{metrics.get('evaluations_saved_by_screening', 0)}[/bold green]")
     table.add_row("Total Evaluations Saved", f"[bold green]{metrics.get('total_evaluations_saved', 0)}[/bold green]")
     table.add_row("Pareto Frontier Checkpoints", str(metrics.get("pareto_points", 0)))
+    table.add_row("Resolved Config Saved", resolved_path)
 
     console.print(table)
 
 
+def main():
+    try:
+        app()
+    except BrokenPipeError:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except Exception:
+            pass
+        sys.exit(0)
+
+
 if __name__ == "__main__":
-    app()
+    main()

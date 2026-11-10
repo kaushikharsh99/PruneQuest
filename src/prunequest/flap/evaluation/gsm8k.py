@@ -4,127 +4,38 @@ Mathematical reasoning evaluation for GSM8K with exact answer verification.
 
 from typing import List, Tuple, Optional
 import time
-import re
-import math
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from prunequest.flap.calibration.dataset import DatasetSample
 from prunequest.flap.evaluation.base import EvaluationResult
+from prunequest.benchmarks.scoring import (
+    extract_boxed_content,
+    clean_math_answer,
+    parse_numeric_value,
+    extract_gsm8k_gold_answer,
+    verify_gsm8k_answer,
+)
 
-try:
-    from math_verify import parse, verify
-    HAS_MATH_VERIFY = True
-except ImportError:
-    HAS_MATH_VERIFY = False
+# Backward compatibility aliases
+clean_math_str = clean_math_answer
+parse_numeric = parse_numeric_value
 
-
-def extract_boxed_content(text: str) -> Optional[str]:
-    pattern = r"\\boxed\{((?:[^{}]|(?R))*)\}"
-    try:
-        import regex
-        match = regex.findall(pattern, text)
-        if match:
-            return match[-1]
-    except Exception:
-        pass
-
-    results = []
-    idx = 0
-    while True:
-        pos = text.find(r"\boxed{", idx)
-        if pos == -1:
-            break
-        pos += len(r"\boxed{")
-        depth = 1
-        curr = []
-        for i in range(pos, len(text)):
-            c = text[i]
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    results.append("".join(curr))
-                    idx = i + 1
-                    break
-            curr.append(c)
-        else:
-            break
-    return results[-1] if results else None
-
-
-def clean_math_str(raw: str) -> str:
-    if not raw:
-        return ""
-    s = raw.strip().strip("$")
-    s = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]*)\}", r"\1", s)
-    s = s.replace("$", "").replace("%", "").replace(",", "").rstrip(".")
-    s = re.sub(r"(?:kg|km|miles|meters|hours|mins|minutes|seconds|days|weeks|dollars|cents|points|degrees)$", "", s, flags=re.IGNORECASE).strip()
-    return s
-
-
-def parse_numeric(s: str) -> Optional[float]:
-    s = s.strip()
-    frac_match = re.match(r"^\\frac\{(-?\d+)\}\{(-?\d+)\}$", s)
-    if frac_match:
-        n, d = float(frac_match.group(1)), float(frac_match.group(2))
-        return n / d if d != 0 else None
-    slash_match = re.match(r"^(-?\d+)\s*/\s*(-?\d+)$", s)
-    if slash_match:
-        n, d = float(slash_match.group(1)), float(slash_match.group(2))
-        return n / d if d != 0 else None
-    try:
-        return float(s)
-    except ValueError:
-        return None
+__all__ = [
+    "GSM8KEvaluator",
+    "verify_math_prediction",
+    "extract_boxed_content",
+    "clean_math_str",
+    "parse_numeric",
+    "clean_math_answer",
+    "parse_numeric_value",
+    "extract_gsm8k_gold_answer",
+    "verify_gsm8k_answer",
+]
 
 
 def verify_math_prediction(pred_text: str, gold_str: str) -> Tuple[bool, str, str]:
-    if "####" in gold_str:
-        gold_cleaned = gold_str.split("####")[-1].strip().replace(",", "")
-    else:
-        nums = re.findall(r"-?\d+(?:\.\d+)?", gold_str.replace(",", ""))
-        gold_cleaned = nums[-1] if nums else gold_str.strip()
-
-    if HAS_MATH_VERIFY:
-        try:
-            cand_p = parse(pred_text)
-            gold_p = parse(gold_str)
-            if cand_p and gold_p:
-                if verify(cand_p, gold_p):
-                    return True, str(cand_p), gold_cleaned
-        except Exception:
-            pass
-
-    boxed = extract_boxed_content(pred_text)
-    if boxed:
-        cand = clean_math_str(boxed)
-        cand_val = parse_numeric(cand)
-        gold_val = parse_numeric(gold_cleaned)
-        if cand_val is not None and gold_val is not None:
-            if math.isclose(cand_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
-                return True, boxed, gold_cleaned
-        if cand.strip().lower() == gold_cleaned.strip().lower():
-            return True, boxed, gold_cleaned
-
-    if "####" in pred_text:
-        pred_cand = clean_math_str(pred_text.split("####")[-1].strip())
-        cand_val = parse_numeric(pred_cand)
-        gold_val = parse_numeric(gold_cleaned)
-        if cand_val is not None and gold_val is not None and math.isclose(cand_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
-            return True, pred_cand, gold_cleaned
-
-    lines = [line.strip() for line in pred_text.split("\n") if line.strip()]
-    if lines:
-        last_nums = re.findall(r"-?\d+(?:\.\d+)?", lines[-1].replace(",", ""))
-        if last_nums:
-            last_val = parse_numeric(last_nums[-1])
-            gold_val = parse_numeric(gold_cleaned)
-            if last_val is not None and gold_val is not None and math.isclose(last_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
-                return True, last_nums[-1], gold_cleaned
-
-    return False, boxed or "", gold_cleaned
+    return verify_gsm8k_answer(pred_text, gold_str)
 
 
 class GSM8KEvaluator:

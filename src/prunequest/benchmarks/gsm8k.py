@@ -2,9 +2,7 @@
 GSM8K benchmark adapter with Qwen2.5-Math zero-shot CoT and math-verify normalization.
 """
 
-import re
 import time
-import math
 import random
 from typing import List, Dict, Any, Optional, Tuple
 import torch
@@ -13,76 +11,22 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from prunequest.benchmarks.base import BaseBenchmark, BenchmarkSample, EvaluationResult
 from prunequest.exceptions import BenchmarkError
+from prunequest.benchmarks.scoring import (
+    extract_boxed_content,
+    clean_math_answer,
+    extract_gsm8k_gold_answer,
+    parse_numeric_value,
+    verify_gsm8k_answer,
+)
 
-try:
-    from math_verify import parse as mv_parse, verify as mv_verify
-    HAS_MATH_VERIFY = True
-except ImportError:
-    HAS_MATH_VERIFY = False
-
-
-def extract_boxed_content(text: str) -> Optional[str]:
-    """
-    Extract content from LaTeX \\boxed{...}, properly handling nested braces.
-    Returns the last boxed expression if multiple exist.
-    """
-    results = []
-    idx = 0
-    while True:
-        pos = text.find(r"\boxed{", idx)
-        if pos == -1:
-            break
-        brace_count = 1
-        i = pos + len(r"\boxed{")
-        start_content = i
-        while i < len(text) and brace_count > 0:
-            if text[i] == '{':
-                brace_count += 1
-            elif text[i] == '}':
-                brace_count -= 1
-            i += 1
-        if brace_count == 0:
-            content = text[start_content:i-1].strip()
-            results.append(content)
-            idx = i
-        else:
-            idx = pos + len(r"\boxed{")
-
-    return results[-1] if results else None
-
-
-def clean_math_answer(raw_str: str) -> str:
-    if not raw_str:
-        return ""
-    s = raw_str.strip().strip("$")
-    s = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]*)\}", r"\1", s)
-    s = s.replace("$", "").replace("%", "").replace(",", "")
-    s = s.rstrip(".")
-    s = re.sub(r"(?:kg|km|miles|meters|hours|mins|minutes|seconds|days|weeks|dollars|cents|points|degrees)$", "", s, flags=re.IGNORECASE).strip()
-    return s
-
-
-def extract_gsm8k_gold_answer(answer_str: str) -> str:
-    if "####" in answer_str:
-        return answer_str.split("####")[-1].strip().replace(",", "")
-    nums = re.findall(r"-?\d+(?:\.\d+)?", answer_str.replace(",", ""))
-    return nums[-1] if nums else answer_str.strip()
-
-
-def parse_numeric_value(s: str) -> Optional[float]:
-    s = s.strip()
-    frac_match = re.match(r"^\\frac\{(-?\d+)\}\{(-?\d+)\}$", s)
-    if frac_match:
-        num, denom = float(frac_match.group(1)), float(frac_match.group(2))
-        return num / denom if denom != 0 else None
-    slash_frac = re.match(r"^(-?\d+)\s*/\s*(-?\d+)$", s)
-    if slash_frac:
-        num, denom = float(slash_frac.group(1)), float(slash_frac.group(2))
-        return num / denom if denom != 0 else None
-    try:
-        return float(s)
-    except ValueError:
-        return None
+__all__ = [
+    "GSM8KBenchmark",
+    "extract_boxed_content",
+    "clean_math_answer",
+    "extract_gsm8k_gold_answer",
+    "parse_numeric_value",
+    "verify_gsm8k_answer",
+]
 
 
 class GSM8KBenchmark(BaseBenchmark):
@@ -115,9 +59,18 @@ class GSM8KBenchmark(BaseBenchmark):
         indices = list(range(len(train_data)))
         rng.shuffle(indices)
 
+        total_needed = calibration_size + screening_size + dev_size
+        if len(train_data) < total_needed:
+            raise BenchmarkError(
+                f"Dataset 'openai/gsm8k' train split contains {len(train_data)} samples, "
+                f"which is fewer than the requested {total_needed} samples "
+                f"(calibration={calibration_size}, screening={screening_size}, dev={dev_size})."
+            )
+
         calib_idx = indices[:calibration_size]
-        dev_idx = indices[calibration_size : calibration_size + dev_size]
-        recovery_idx = indices[calibration_size + dev_size :]
+        screen_idx = indices[calibration_size : calibration_size + screening_size]
+        dev_idx = indices[calibration_size + screening_size : calibration_size + screening_size + dev_size]
+        recovery_idx = indices[calibration_size + screening_size + dev_size :]
 
         def make_samples(items, split_name):
             samples = []
@@ -131,15 +84,17 @@ class GSM8KBenchmark(BaseBenchmark):
             return samples
 
         calib_samples = make_samples([train_data[i] for i in calib_idx], "calibration")
+        screen_samples = make_samples([train_data[i] for i in screen_idx], "screening")
         dev_samples = make_samples([train_data[i] for i in dev_idx], "dev")
         recovery_samples = make_samples([train_data[i] for i in recovery_idx], "recovery_reserved")
         test_samples = make_samples(test_data, "official_test")
 
         self.data_splits = {
             "calibration": calib_samples,
+            "screening": screen_samples,
             "dev": dev_samples,
-            "smoke": dev_samples[:smoke_size],
-            "screening": dev_samples[:screening_size],
+            "acceptance": dev_samples,
+            "smoke": dev_samples[:smoke_size],  # Diagnostic subset of dev for quick healthchecks
             "recovery_reserved": recovery_samples,
             "test": test_samples,
             "full": test_samples,
@@ -156,62 +111,7 @@ class GSM8KBenchmark(BaseBenchmark):
         return f"<|im_start|>system\n{self.SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{sample.question}<|im_end|>\n<|im_start|>assistant\n"
 
     def verify_answer(self, prediction_text: str, gold_str: str) -> Tuple[bool, str, str]:
-        gold_cleaned = extract_gsm8k_gold_answer(gold_str)
-
-        if HAS_MATH_VERIFY:
-            try:
-                p_pred = mv_parse(prediction_text)
-                p_gold = mv_parse(gold_cleaned)
-                if p_pred and p_gold and mv_verify(p_gold, p_pred):
-                    extracted = str(p_pred[-1]) if p_pred else ""
-                    return True, extracted, gold_cleaned
-            except Exception:
-                pass
-
-        boxed = extract_boxed_content(prediction_text)
-        if boxed is not None:
-            cand = clean_math_answer(boxed)
-            if HAS_MATH_VERIFY:
-                try:
-                    p_cand = mv_parse(boxed)
-                    p_gold = mv_parse(gold_cleaned)
-                    if p_cand and p_gold and mv_verify(p_gold, p_cand):
-                        return True, boxed, gold_cleaned
-                except Exception:
-                    pass
-
-            cand_val = parse_numeric_value(cand)
-            gold_val = parse_numeric_value(gold_cleaned)
-            if cand_val is not None and gold_val is not None:
-                if math.isclose(cand_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
-                    return True, boxed, gold_cleaned
-            if cand.strip().lower() == gold_cleaned.strip().lower():
-                return True, boxed, gold_cleaned
-            return False, boxed, gold_cleaned
-
-        if "####" in prediction_text:
-            pred_cand = prediction_text.split("####")[-1].strip()
-            cand = clean_math_answer(pred_cand)
-            cand_val = parse_numeric_value(cand)
-            gold_val = parse_numeric_value(gold_cleaned)
-            if cand_val is not None and gold_val is not None:
-                if math.isclose(cand_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
-                    return True, pred_cand, gold_cleaned
-
-        lines = [line.strip() for line in prediction_text.split("\n") if line.strip()]
-        if lines:
-            last_line = lines[-1]
-            nums = re.findall(r"-?\d+(?:\.\d+)?", last_line.replace(",", ""))
-            if nums:
-                last_num = nums[-1]
-                last_val = parse_numeric_value(last_num)
-                gold_val = parse_numeric_value(gold_cleaned)
-                if last_val is not None and gold_val is not None:
-                    if math.isclose(last_val, gold_val, rel_tol=1e-5, abs_tol=1e-5):
-                        return True, last_num, gold_cleaned
-                return False, last_num, gold_cleaned
-
-        return False, "", gold_cleaned
+        return verify_gsm8k_answer(prediction_text, gold_str)
 
     def evaluate(
         self,
@@ -225,10 +125,14 @@ class GSM8KBenchmark(BaseBenchmark):
         if not self.data_splits:
             self.load_data()
 
+        if split_name not in self.data_splits and split_name not in ("full", "test"):
+            valid = ", ".join(sorted(self.data_splits.keys()))
+            raise BenchmarkError(f"Unknown split '{split_name}'. Available splits: {valid}")
+
         if split_name in ("full", "test"):
             samples = self.data_splits.get("full", self.data_splits.get("test", []))
         else:
-            samples = self.data_splits.get(split_name, self.data_splits.get("smoke", []))
+            samples = self.data_splits[split_name]
         if max_samples:
             samples = samples[:max_samples]
 

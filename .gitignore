@@ -23,6 +23,7 @@ htmlcov/
 
 # Local experiment runs & checkpoints (do not commit multi-GB safetensors)
 runs/
+reports/
 *.safetensors
 *.bin
 *.pt

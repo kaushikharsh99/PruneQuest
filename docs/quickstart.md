@@ -1,114 +1,194 @@
-# Quickstart Guide: PruneQuest v0.1.0
+# Quickstart Guide: PruneQuest Release A
 
-PruneQuest is an automated, benchmark-guided structured pruning framework designed for large language models. It enables systematic parameter reduction while guaranteeing task-specific benchmark retention.
+**PruneQuest** is an autonomous, benchmark-guided structural pruning framework for Large Language Models. It enables systematic parameter reduction while enforcing strict directional benchmark retention constraints (e.g. $\ge 99\%$ accuracy retention) with transactional rollback and independent checkpoint reload validation.
 
 ---
 
 ## 1. Installation
 
-PruneQuest requires Python 3.10+ and PyTorch with CUDA support.
+PruneQuest requires **Python 3.10+** and PyTorch (supports both GPU and CPU-only environments).
 
 ```bash
 # Clone the repository
 git clone https://github.com/kaushikharsh99/PruneQuest.git
 cd PruneQuest
 
-# Install in editable mode
+# Core installation (CLI + core pruning framework)
 pip install -e .
+
+# Optional: install development testing and LM Evaluation Harness extras
+pip install -e ".[dev,eval]"
 ```
 
-Verify your hardware and runtime environment:
+---
+
+## 2. Environment Diagnostics (`prunequest doctor`)
+
+Verify system dependencies, PyTorch, CUDA, VRAM headroom, and optional packages:
 
 ```bash
+# General environment diagnostics
 prunequest doctor
+
+# FLAP-specific hardware diagnostics
+prunequest flap doctor
 ```
 
-Output confirms GPU VRAM, CUDA compatibility, PyTorch versions, and memory headroom.
+The diagnostics report Python version, CUDA availability, GPU device name, free/total VRAM, core libraries, optional extras, workspace write permissions, and supported model capability tiers.
 
 ---
 
-## 2. Inspecting a Target Model
+## 3. Inspecting a Target Model
 
-Before pruning, inspect the model's structural parameters and layer counts:
+Inspect model architecture, parameter count, transformer layer structure, and capability level without downloading weights upfront:
 
 ```bash
+# Universal architecture inspection
 prunequest inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
+
+# Inspect SwiGLU MLP channel dimensions directly via FLAP
+prunequest flap inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
 ```
 
 ---
 
-## 3. Running an Evaluation Baseline
+## 4. Discovering and Validating Benchmarks
 
-Establish the unpruned baseline accuracy on GSM8K:
+Discover available benchmarks across native adapters, declarative YAML specifications, and optional LM-Eval tasks:
 
 ```bash
-# Smoke test (16 samples)
-prunequest baseline --model Qwen/Qwen2.5-Math-1.5B-Instruct --split smoke
+# List top benchmarks
+prunequest benchmarks list --limit 20
 
-# Full evaluation (1,319 GSM8K test samples)
-prunequest baseline --model Qwen/Qwen2.5-Math-1.5B-Instruct --split full
+# Search available benchmarks
+prunequest benchmarks search math
+prunequest benchmarks search gsm8k
+
+# Inspect benchmark metadata
+prunequest benchmarks info gsm8k
+
+# Validate a custom declarative YAML benchmark specification
+prunequest benchmarks validate --spec configs/default.yaml
 ```
 
 ---
 
-## 4. Launching Automated Pruning Search
+## 5. 5-Minute Quickstart: Pipeline Smoke Test
 
-Execute greedy layer pruning guided by Block Influence (BI), targeting $\ge 99\%$ accuracy retention:
+To verify that the entire pipeline (scoring, candidate proposal, screening, checkpoint export, and subprocess reload validation) functions on your system, execute a lightweight 1-iteration smoke check:
 
 ```bash
-prunequest run \
+prunequest block-based run \
+    --model Qwen/Qwen2.5-Math-1.5B-Instruct \
+    --benchmark gsm8k \
+    --retain 0.99 \
+    --max-iterations 1 \
+    --split smoke \
+    --output ./runs/qwen_smoke_run
+```
+
+> **Note**: Smoke mode evaluates a 16-sample diagnostic subset to verify execution and checkpoint serialization. It is intended for engineering validation, not for reliable population-level accuracy claims.
+
+---
+
+## 6. Production Workflows
+
+For production-grade compression, PruneQuest provides three distinct workflows evaluated across full development partitions:
+
+### Workflow A: Block Influence (Structured Depth / Layer Pruning)
+Greedy layer excision ranking transformer blocks by token-level cosine distances:
+
+```bash
+prunequest block-based run \
     --model Qwen/Qwen2.5-Math-1.5B-Instruct \
     --benchmark gsm8k \
     --retain 0.99 \
     --max-iterations 3 \
-    --split smoke \
-    --output-dir ./runs/qwen_run_01
+    --split dev \
+    --output ./runs/qwen_block_run
 ```
 
-During execution, PruneQuest:
-1. Computes baseline accuracy on the chosen benchmark split.
-2. Evaluates layer importance using token-level cosine distances (Block Influence).
-3. Screens top candidate layers on a fast screening subset.
-4. Validates full candidates and automatically rolls back if accuracy dips below 99% retention.
-5. Exports the pruned checkpoint with standalone Hugging Face `safetensors` and `prunequest_metadata.json`.
-
----
-
-## 5. Resuming an Interrupted Experiment
-
-If a run is interrupted or halted:
+### Workflow B: FLAP (Structured Width / MLP Channel Pruning)
+Fluctuation-based Adaptive Structured Pruning on SwiGLU intermediate channels with adaptive step-back halving:
 
 ```bash
-prunequest resume ./runs/qwen_run_01
+# 1. Profile FLAP layer importance scores
+prunequest flap profile --config configs/qwen_math_flap.yaml
+
+# 2. Run incremental width pruning optimization
+prunequest flap optimize --config configs/qwen_math_flap.yaml --batch-size 32
+
+# 3. Independently test exported checkpoint
+prunequest flap test --checkpoint runs/qwen_math_flap/checkpoints/best --split acceptance
 ```
 
-State is persisted automatically to an SQLite database (`experiments.db`) and JSONL run traces.
+### Workflow C: JIPO Full Sweep (Joint Width & Depth Optimization)
+Joint Incremental Pruning Optimizer dynamically searching depth excisions and width slicing:
+
+```bash
+prunequest full-sweep --config configs/full_sweep.yaml
+
+# Or with runtime CLI overrides:
+prunequest full-pass \
+    --config configs/full_sweep.yaml \
+    --model "Qwen/Qwen2.5-Math-1.5B-Instruct" \
+    --retain 0.95 \
+    --max-iterations 10 \
+    --device "cuda:0" \
+    --output "runs/full_sweep" \
+    --resume
+```
 
 ---
 
-## 6. Python API Usage
+## 7. Resuming Interrupted Runs
+
+PruneQuest saves experiment state transactionally. If an experiment is interrupted:
+
+```bash
+# Resume Block Influence run
+prunequest resume ./runs/qwen_block_run
+
+# Resume FLAP run
+prunequest flap resume --run-dir ./runs/qwen_math_flap
+```
+
+Resume validates baseline scores, model architecture, and checkpoint integrity before resuming search.
+
+---
+
+## 8. Checkpoint Export & Independent Validation
+
+Export accepted checkpoints to Hugging Face `safetensors` format with out-of-process reload validation:
+
+```bash
+prunequest export runs/qwen_block_run/checkpoints/checkpoint_layers_27 --output ./exported_model --validate
+```
+
+The subprocess validator ensures `config.json`, tokenizer, finite weights (no NaNs/Infs), finite logits, and generation succeed in an isolated interpreter before confirming export.
+
+---
+
+## 9. Python API Usage
 
 PruneQuest can be used directly as a Python library:
 
 ```python
 from prunequest import PruneQuest
 
-# Initialize pruner session
 quest = PruneQuest(
     model="Qwen/Qwen2.5-Math-1.5B-Instruct",
-    benchmark="gsm8k",
+    benchmarks=["gsm8k"],
     retain=0.99,
-    max_iterations=4,
+    max_iterations=3,
     device="cuda:0",
-    split="smoke",
+    split="dev",
 )
 
-# Run end-to-end pruning loop
 result = quest.run()
 
 print(f"Status: {result.status}")
 print(f"Best checkpoint: {result.best_checkpoint}")
-print(f"Original params: {result.original_params:,}")
-print(f"Final params:    {result.final_params:,}")
+print(f"Parameters pruned: {result.original_params - result.final_params:,}")
 print(f"Accuracy retention: {result.accuracy_retention_pct:.2f}%")
 ```

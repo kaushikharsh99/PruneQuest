@@ -361,6 +361,11 @@ class JointIncrementalOptimizer:
                 # Ensure Level 1 baseline profiles are ready
                 self._refresh_profiles()
 
+                # Verify checkpoint integrity before resumption
+                ok, msg = CheckpointValidator.validate(ckpt_path)
+                if not ok:
+                    raise ValueError(f"Cannot resume sweep: checkpoint '{ckpt_path}' failed integrity validation: {msg}")
+
                 # Determine resumed FLAP ratio and remaining layers
                 import json
                 config_json_path = os.path.join(ckpt_path, "config.json")
@@ -370,11 +375,11 @@ class JointIncrementalOptimizer:
                 else:
                     ckpt_cfg = {}
 
-                orig_inter = getattr(self.model.config, "intermediate_size", 8960)
+                orig_inter = getattr(self.model.config, "intermediate_size", getattr(self.model.config, "hidden_size", 0))
                 curr_inter = ckpt_cfg.get("intermediate_size", orig_inter)
-                resumed_flap_ratio = round(max(0.0, 1.0 - (curr_inter / orig_inter)), 4)
+                resumed_flap_ratio = round(max(0.0, 1.0 - (curr_inter / orig_inter)), 4) if orig_inter > 0 else 0.0
 
-                orig_layers = getattr(self.model.config, "num_hidden_layers", 28)
+                orig_layers = getattr(self.model.config, "num_hidden_layers", getattr(self.model.config, "n_layer", 0))
                 curr_layers = ckpt_cfg.get("num_hidden_layers", orig_layers)
                 self.total_blocks_removed = max(0, orig_layers - curr_layers)
                 self.total_flap_ratio_applied = resumed_flap_ratio

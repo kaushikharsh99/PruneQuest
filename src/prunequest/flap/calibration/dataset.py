@@ -64,6 +64,14 @@ class DatasetManager:
         train_data = list(ds["train"])
         test_data = list(ds["test"])
 
+        total_requested = calibration_samples + screening_samples + acceptance_samples
+        if len(train_data) < total_requested:
+            raise ValueError(
+                f"Dataset '{self.dataset_name}' train split contains {len(train_data)} items, "
+                f"which is insufficient for requested partitions (calibration={calibration_samples}, "
+                f"screening={screening_samples}, acceptance={acceptance_samples}, total={total_requested})."
+            )
+
         rng = random.Random(self.seed)
         indices = list(range(len(train_data)))
         rng.shuffle(indices)
@@ -121,6 +129,13 @@ class DatasetManager:
                 items = json.load(f)
 
         rng = random.Random(self.seed)
+        total_requested = calibration_samples + screening_samples + acceptance_samples
+        if len(items) < total_requested:
+            raise ValueError(
+                f"Local file '{file_path}' contains {len(items)} items, "
+                f"which is insufficient for requested partitions (calibration={calibration_samples}, "
+                f"screening={screening_samples}, acceptance={acceptance_samples}, total={total_requested})."
+            )
         indices = list(range(len(items)))
         rng.shuffle(indices)
 

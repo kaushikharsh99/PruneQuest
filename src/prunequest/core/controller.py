@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, List, Union
 import torch
 
 from prunequest.config import PruneQuestConfig
+from prunequest.exceptions import BenchmarkError
 from prunequest.models.base import BaseModelAdapter
 from prunequest.models.registry import ModelRegistry
 from prunequest.benchmarks.base import BaseBenchmark, EvaluationResult
@@ -465,27 +466,37 @@ class SearchController:
         }
 
     def _rollback_layer(self, layer_idx: int, layer_module: torch.nn.Module):
-        self.adapter.model.model.layers.insert(layer_idx, layer_module)
-        self.adapter.model.config.num_hidden_layers = len(self.adapter.model.model.layers)
+        layers = self.adapter.get_layers()
+        layers.insert(layer_idx, layer_module)
+        self.adapter.model.config.num_hidden_layers = len(layers)
         if hasattr(self.adapter.model.config, "layer_types") and self.adapter.model.config.layer_types is not None:
             self.adapter.model.config.layer_types.insert(layer_idx, "full_attention")
-        for idx, layer in enumerate(self.adapter.model.model.layers):
-            layer.layer_idx = idx
-            if hasattr(layer, "self_attn"):
+        for idx, layer in enumerate(layers):
+            if hasattr(layer, "layer_idx"):
+                layer.layer_idx = idx
+            if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "layer_idx"):
                 layer.self_attn.layer_idx = idx
 
-    def _ensure_disk_space(self, min_free_gb: float = 6.0):
+    def _ensure_disk_space(self, min_free_gb: float = 4.0):
         try:
             free_gb = shutil.disk_usage(self.run_dir).free / (1024**3)
-            # Never delete active checkpoints or states referenced by the tracker
-            if free_gb < min_free_gb and len(self.accepted_checkpoints) > 2:
-                # Remove safetensors from older non-terminal checkpoints while preserving metadata
-                for old in self.accepted_checkpoints[:-2]:
-                    p = old.get("checkpoint_path")
-                    if p and os.path.exists(p) and p != self.config.model.model_id:
-                        sf = os.path.join(p, "model.safetensors")
-                        if os.path.exists(sf):
-                            os.remove(sf)
+            # Never delete accepted checkpoints or states referenced by the tracker
+            if free_gb < min_free_gb:
+                # Protect all accepted checkpoints and baseline
+                protected_dirs = set()
+                for rec in self.accepted_checkpoints:
+                    p = rec.get("checkpoint_path")
+                    if p and os.path.exists(p):
+                        protected_dirs.add(os.path.abspath(p))
+
+                # Safely prune only genuine unaccepted temporary candidate folders
+                ckpts_dir = os.path.join(self.run_dir, "checkpoints")
+                if os.path.exists(ckpts_dir):
+                    for entry in os.listdir(ckpts_dir):
+                        full_entry = os.path.abspath(os.path.join(ckpts_dir, entry))
+                        if (entry.startswith("temp_") or entry.startswith("candidate_")) and full_entry not in protected_dirs:
+                            if os.path.isdir(full_entry):
+                                shutil.rmtree(full_entry, ignore_errors=True)
         except Exception:
             pass
 
@@ -495,17 +506,32 @@ class SearchController:
         and parameter counts across all benchmarks.
         """
         baseline_record = self.tracker.get_baseline()
-        if baseline_record:
-            self.baseline_accuracy = baseline_record["accuracy"]
-            self.baseline_params = baseline_record["params_after"]
-            self.accepted_checkpoints = self.tracker.get_all_accepted()
+        if not baseline_record:
+            raise BenchmarkError(f"Cannot resume from '{self.run_dir}': no baseline record found in tracker.")
+
+        self.baseline_accuracy = baseline_record["accuracy"]
+        self.baseline_params = baseline_record["params_after"]
+        self.accepted_checkpoints = self.tracker.get_all_accepted()
 
         latest = self.tracker.get_latest_accepted()
-        if not latest or not latest.get("checkpoint_path") or not os.path.exists(latest["checkpoint_path"]):
+        if not latest or not latest.get("checkpoint_path"):
             return self.run()
 
-        # Update model_id to point to accepted checkpoint
-        self.config.model.model_id = latest["checkpoint_path"]
+        ckpt_path = latest["checkpoint_path"]
+        if not os.path.exists(ckpt_path):
+            alt_path = os.path.join(self.run_dir, "checkpoints", os.path.basename(ckpt_path))
+            if os.path.exists(alt_path):
+                ckpt_path = alt_path
+            else:
+                raise BenchmarkError(f"Cannot resume run: checkpoint path '{ckpt_path}' does not exist on disk.")
+
+        # Validate checkpoint integrity before loading
+        ok, msg = SubprocessValidator.validate_checkpoint(ckpt_path, device="cpu")
+        if not ok:
+            raise BenchmarkError(f"Cannot resume run: checkpoint '{ckpt_path}' failed integrity validation: {msg}")
+
+        # Update model_id to point to verified accepted checkpoint
+        self.config.model.model_id = ckpt_path
         self.adapter = ModelRegistry.get_adapter(
             model_id_or_path=self.config.model.model_id,
             device=self.config.model.device,

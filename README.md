@@ -36,11 +36,11 @@ Instead of applying blind heuristics or non-functional weight masking, PruneQues
 
 | Family | Architecture Class | Capability Level | Supported Pruning Operations |
 | :--- | :--- | :--- | :--- |
-| **Qwen 2 / 2.5** | `decoder_only_dense` | **Level 3 (Verified)** | Physical layer removal, Block Influence scoring |
-| **Llama 2 / 3 / 3.1 / 3.2** | `decoder_only_dense` | **Level 3 (Verified)** | Physical layer removal, Block Influence scoring |
-| **Mistral / Zephyr** | `decoder_only_dense` | **Level 3 (Verified)** | Physical layer removal, Block Influence scoring |
-| **Gemma / Gemma-2** | `decoder_only_dense` | **Level 2 (Experimental)** | Physical layer removal (experimental normalization sync) |
-| **Phi-2 / Phi-3 / 3.5** | `decoder_only_dense` | **Level 2 (Experimental)** | Physical layer removal (experimental RoPE/partial rotary) |
+| **Qwen 2 / 2.5** | `decoder_only_dense` | **Level 3 (Verified)** | Layer removal (Block Influence), SwiGLU MLP width slicing (FLAP), Joint Sweep (JIPO) |
+| **Llama 2 / 3 / 3.1 / 3.2** | `decoder_only_dense` | **Level 3 (Verified)** | Layer removal (Block Influence), SwiGLU MLP width slicing (FLAP), Joint Sweep (JIPO) |
+| **Mistral / Zephyr** | `decoder_only_dense` | **Level 3 (Verified)** | Layer removal (Block Influence), SwiGLU MLP width slicing (FLAP), Joint Sweep (JIPO) |
+| **Gemma / Gemma-2** | `decoder_only_dense` | **Level 2 (Experimental)** | Physical layer removal, SwiGLU MLP intermediate slicing (experimental norm sync) |
+| **Phi-2 / Phi-3 / 3.5** | `decoder_only_dense` | **Level 2 (Experimental)** | Physical layer removal (experimental RoPE/partial rotary; fused proj in Phi-3) |
 | **Mixtral / Qwen-MoE** | `mixture_of_experts` | **Level 1 (Evaluation)** | Benchmark evaluation supported; expert pruning in dev |
 
 ---
@@ -158,13 +158,13 @@ prunequest flap test --checkpoint runs/qwen_math_flap/best --split test
 #### Block-Based: Structured Depth / Layer Pruning
 Autonomous search controller pruning redundant transformer blocks based on Block Influence hidden state cosine distance:
 ```bash
-# Multi-benchmark pruning search with 99% retention target
+# Multi-benchmark pruning search with 99% retention target (dev split, or smoke for healthchecks)
 prunequest block-based run \
     --model Qwen/Qwen2.5-Math-1.5B-Instruct \
     --benchmark gsm8k \
     --retain 0.99 \
     --max-iterations 3 \
-    --split smoke \
+    --split dev \
     --output ./runs/qwen_block_run
 
 # Or inspect model layer rankings using the 'block' alias

@@ -4,13 +4,20 @@ Unit tests for configuration validation and serialization.
 
 import tempfile
 import pytest
-from prunequest.config import PruneQuestConfig, ModelConfig, PruningConfig
+from pydantic import ValidationError
+from prunequest.config import (
+    PruneQuestConfig,
+    ModelConfig,
+    BenchmarkConfig,
+    PruningConfig,
+)
 
 
 def test_default_config():
     cfg = PruneQuestConfig()
     assert cfg.model.model_id == "Qwen/Qwen2.5-Math-1.5B-Instruct"
     assert cfg.benchmark.name == "gsm8k"
+    assert cfg.benchmark.split == "dev"  # Safe default
     assert cfg.pruning.retain == 0.99
     assert cfg.pruning.strategy == "greedy"
 
@@ -30,6 +37,22 @@ def test_config_yaml_serialization():
 
 
 def test_config_validation():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         # retain must be <= 1.0 and >= 0.0
         PruningConfig(retain=1.5)
+
+    with pytest.raises(ValidationError):
+        # max_iterations must be > 0
+        PruningConfig(max_iterations=0)
+
+    with pytest.raises(ValidationError):
+        # unknown split
+        BenchmarkConfig(split="invalid_split_name")
+
+    with pytest.raises(ValidationError):
+        # invalid device
+        ModelConfig(device="tpu:0")
+
+    with pytest.raises(ValidationError):
+        # extra/unknown field forbidden
+        PruneQuestConfig.model_validate({"unknown_field": "disallowed"})

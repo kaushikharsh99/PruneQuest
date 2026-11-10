@@ -1,9 +1,10 @@
 """
 Configuration schema for Joint Incremental Pruning Optimizer (JIPO) Full Sweep.
+Enforces strict boundary checks and forbids unknown configuration keys.
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import yaml
 import os
 
@@ -11,29 +12,33 @@ from prunequest.flap.config import ModelConfig, CalibrationConfig, FLAPMetricCon
 
 
 class JointPruningConfig(BaseModel):
-    initial_flap_ratio: float = Field(default=0.05, description="Initial channel pruning step ratio per iteration (e.g. 5%)")
-    minimum_flap_ratio: float = Field(default=0.002, description="Minimum channel pruning step ratio before terminating FLAP")
-    maximum_total_flap_ratio: float = Field(default=0.25, description="Maximum cumulative MLP width pruning ratio")
-    backoff_factor: float = Field(default=0.5, description="Reduction factor applied to FLAP step on rejection")
-    max_block_removals: int = Field(default=4, description="Maximum total transformer blocks to excise")
-    min_remaining_layers: int = Field(default=4, description="Minimum transformer layers that must be retained")
-    retention: float = Field(default=0.95, ge=0.0, le=1.0, description="Minimum benchmark accuracy retention ratio (e.g. 0.95 for 95%)")
-    max_iterations: int = Field(default=10, description="Maximum joint optimization iterations")
-    time_budget_sec: Optional[int] = Field(default=None, description="Maximum search time in seconds")
-    beam_width: int = Field(default=1, description="Search beam width (1 = greedy)")
-    screening_loss_factor: float = Field(default=2.5, description="Screening loss multiplier threshold")
-    screening_loss_margin: float = Field(default=0.8, description="Screening loss additive margin")
+    model_config = ConfigDict(extra="forbid")
+
+    initial_flap_ratio: float = Field(default=0.05, gt=0.0, le=1.0, description="Initial channel pruning step ratio per iteration")
+    minimum_flap_ratio: float = Field(default=0.002, gt=0.0, le=1.0, description="Minimum channel pruning step ratio before terminating FLAP")
+    maximum_total_flap_ratio: float = Field(default=0.25, gt=0.0, le=1.0, description="Maximum cumulative MLP width pruning ratio")
+    backoff_factor: float = Field(default=0.5, gt=0.0, lt=1.0, description="Reduction factor applied to FLAP step on rejection")
+    max_block_removals: int = Field(default=4, ge=0, description="Maximum total transformer blocks to excise")
+    min_remaining_layers: int = Field(default=4, gt=0, description="Minimum transformer layers that must be retained")
+    retention: float = Field(default=0.95, ge=0.0, le=1.0, description="Minimum benchmark accuracy retention ratio")
+    max_iterations: int = Field(default=10, gt=0, description="Maximum joint optimization iterations")
+    time_budget_sec: Optional[int] = Field(default=None, gt=0, description="Maximum search time in seconds")
+    beam_width: int = Field(default=1, gt=0, description="Search beam width")
+    screening_loss_factor: float = Field(default=2.5, gt=0.0, description="Screening loss multiplier threshold")
+    screening_loss_margin: float = Field(default=0.8, ge=0.0, description="Screening loss additive margin")
 
 
 class JointSweepConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     model: ModelConfig = Field(default_factory=ModelConfig)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     flap: FLAPMetricConfig = Field(default_factory=FLAPMetricConfig)
     pruning: JointPruningConfig = Field(default_factory=JointPruningConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     hardware: HardwareConfig = Field(default_factory=HardwareConfig)
-    output_dir: str = "runs/full_sweep"
-    reports_dir: str = "reports"
+    output_dir: str = Field(default="runs/full_sweep", min_length=1)
+    reports_dir: str = Field(default="reports", min_length=1)
 
     @classmethod
     def from_yaml(cls, path: str) -> "JointSweepConfig":
