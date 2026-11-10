@@ -28,6 +28,7 @@ class JointExperimentTracker:
         self.total_full_evaluations: int = 0
 
         self._init_db()
+        self._load_existing_records()
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -59,6 +60,20 @@ class JointExperimentTracker:
                 )
             """)
             conn.commit()
+
+    def _load_existing_records(self):
+        """Loads historical trials from SQLite to populate in-memory state on resume."""
+        if not os.path.exists(self.db_path):
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trials ORDER BY created_at ASC")
+            for row in cursor.fetchall():
+                rec = dict(row)
+                self.records.append(rec)
+                if rec.get("status") == "accepted":
+                    self.update_pareto_frontier(rec)
 
     def log_trial(self, record: Dict[str, Any]):
         """Records a trial into memory and SQLite."""
@@ -132,14 +147,65 @@ class JointExperimentTracker:
             ]
             self.pareto_frontier.append(record)
 
+    def get_baseline(self) -> Optional[Dict[str, Any]]:
+        """Returns baseline record if already established in SQLite DB."""
+        if not os.path.exists(self.db_path):
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trials WHERE trial_id = 'baseline' AND status = 'accepted'")
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        return None
+
+    def get_latest_accepted(self) -> Optional[Dict[str, Any]]:
+        """Returns the latest accepted checkpoint record that exists on disk."""
+        if not os.path.exists(self.db_path):
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM trials WHERE status = 'accepted' AND trial_id != 'baseline' AND checkpoint_path != '' "
+                "ORDER BY iteration DESC, created_at DESC"
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                rec = dict(row)
+                ckpt_path = rec.get("checkpoint_path", "")
+                if ckpt_path:
+                    candidate_paths = [
+                        ckpt_path,
+                        os.path.join(self.run_dir, ckpt_path),
+                        os.path.join(self.run_dir, "checkpoints", os.path.basename(ckpt_path)),
+                    ]
+                    resolved_path = None
+                    for cp in candidate_paths:
+                        if os.path.exists(cp):
+                            resolved_path = os.path.abspath(cp)
+                            break
+                    if resolved_path:
+                        weights_safetensors = os.path.join(resolved_path, "model.safetensors")
+                        weights_bin = os.path.join(resolved_path, "pytorch_model.bin")
+                        weights_index = os.path.join(resolved_path, "model.safetensors.index.json")
+                        if os.path.exists(weights_safetensors) or os.path.exists(weights_bin) or os.path.exists(weights_index):
+                            rec["checkpoint_path"] = resolved_path
+                            return rec
+        return None
+
     def get_best_pareto_checkpoint(self) -> Optional[Dict[str, Any]]:
         """Returns the accepted checkpoint with greatest parameter reduction that satisfied retention."""
         accepted = [r for r in self.records if r.get("status") == "accepted" and r.get("checkpoint_path")]
-        if not accepted:
-            return None
-        # Sort by lowest parameter count (greatest compression)
-        accepted.sort(key=lambda x: x["params_after"])
-        return accepted[0]
+        pruned_accepted = [r for r in accepted if r.get("checkpoint_path") != "unpruned_baseline"]
+        if pruned_accepted:
+            pruned_accepted.sort(key=lambda x: x["params_after"])
+            return pruned_accepted[0]
+        if accepted:
+            accepted.sort(key=lambda x: x["params_after"])
+            return accepted[0]
+        return None
 
     def get_summary_metrics(self) -> Dict[str, Any]:
         """Returns aggregated efficiency and search metrics."""

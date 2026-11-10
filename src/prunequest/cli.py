@@ -428,6 +428,7 @@ def full_sweep(
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Inference device override"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory override"),
     flap_step: Optional[float] = typer.Option(None, "--flap-step", "-s", help="Initial FLAP step ratio override (e.g. 0.05)"),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume from latest accepted checkpoint if available"),
 ):
     """Execute complete Full Sweep / Full Pass combining FLAP-based and Block-based pruning via JIPO."""
     from prunequest.sweep.config import JointSweepConfig
@@ -456,15 +457,15 @@ def full_sweep(
     ))
 
     optimizer = JointIncrementalOptimizer(cfg)
-    with console.status("[bold green]Loading model and initializing dataset partitions...[/bold green]"):
-        optimizer.initialize()
+    console.print("[bold green]Loading model and initializing dataset partitions...[/bold green]")
+    optimizer.initialize()
 
     console.print("[bold blue]Establishing unpruned baseline...[/bold blue]")
     baseline_rec = optimizer.run_baseline()
     console.print(f"[bold green]✔ Baseline Established:[/bold green] Accuracy: {baseline_rec['accuracy']*100:.2f}% | Loss: {baseline_rec['screening_loss']:.4f} | Params: {baseline_rec['params_before']/1e6:.2f}M")
 
     console.print("[bold cyan]Launching Joint Multi-Fidelity Pruning Search...[/bold cyan]")
-    summary = optimizer.optimize()
+    summary = optimizer.optimize(resume=resume)
 
     # Display Summary Table
     table = Table(title="[bold green]JIPO Full Sweep Execution Summary[/bold green]")

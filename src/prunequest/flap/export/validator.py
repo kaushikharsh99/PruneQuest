@@ -2,7 +2,7 @@
 Subprocess reload validator verifying exported checkpoints in an isolated process.
 """
 
-from typing import Tuple
+from typing import Tuple, Optional
 import os
 import sys
 import subprocess
@@ -21,6 +21,8 @@ class CheckpointValidator:
         timeout_sec: int = 120,
         max_new_tokens: int = 5,
         prompt: str = "The sum of 10 and 20 is",
+        device: Optional[str] = None,
+        **kwargs,
     ) -> Tuple[bool, str]:
         if not os.path.exists(checkpoint_dir):
             return False, f"Directory does not exist: {checkpoint_dir}"

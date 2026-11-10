@@ -45,18 +45,20 @@ Instead of applying blind heuristics or non-functional weight masking, PruneQues
 
 ---
 
-## Empirical Exploration: Qwen2.5-Math-1.5B on GSM8K
+## Empirical Results: Qwen2.5-Math-1.5B Full Sweep (JIPO)
 
-During preliminary experimental exploration on an NVIDIA GeForce RTX 3050 Laptop GPU (6 GB VRAM), multiple structural compression techniques were evaluated on `Qwen/Qwen2.5-Math-1.5B-Instruct` across deterministic GSM8K splits:
+Evaluated on an NVIDIA GeForce RTX 3050 Laptop GPU (6 GB VRAM) executing the Joint Incremental Pruning Optimizer (JIPO) on `Qwen/Qwen2.5-Math-1.5B-Instruct` across deterministic 512-sample GSM8K evaluation partitions with strict $\ge 95.0\%$ accuracy retention constraints:
 
-| Checkpoint | Parameter Count | GSM8K Accuracy (16-sample smoke split) | Accuracy Retention | VRAM Allocated | Latency / Sample | Modality & Description |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Baseline (Original)** | 1,543.71M | 100.00% (16/16) | 100.00% | 2.90 GB | 1.83 s | Full 28 Layers, unpruned reference |
-| **Pruned (`mlp_red_5`)** | **1,485.91M** | **100.00% (16/16)** | **100.00%** | **2.88 GB** | **1.71 s** | Experimental MLP intermediate channel slicing (-57.8M params) |
-| **Pruned (`checkpoint_layers_25`)** | 1,403.32M | 81.25% (13/16) | 81.25% | 2.74 GB | 1.54 s | Block Influence layer pruning (25 of 28 layers retained) |
-| **Control (`random_layer_2`)** | 1,496.92M | 87.50% (14/16) | 87.50% | 2.82 GB | 1.76 s | Naive random layer removal control |
+| Iteration / Checkpoint | Active Layers | Intermediate Size | Parameter Count | Compression Ratio | GSM8K Accuracy (512 samples) | Accuracy Retention | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Baseline (Original)** | 28 | 8,960 | 1,543,714,304 (1,543.71M) | 0.00% | 94.14% (482/512) | 100.00% | Unpruned Reference |
+| **Iteration 1 (`flap_only_iter_1`)** | 28 | 8,512 | 1,485,911,552 (1,485.91M) | -3.74% (5.00% FLAP) | 93.95% (481/512) | 99.79% | Accepted |
+| **Iteration 2 (`flap_only_iter_2`)** | 28 | 8,064 | 1,428,108,800 (1,428.11M) | -7.49% (10.00% FLAP) | 94.92% (486/512) | 100.83% | Accepted |
+| **Iteration 3 (`flap_only_iter_3`)** | 28 | 7,616 | 1,370,306,048 (1,370.31M) | -11.23% (15.00% FLAP) | 93.16% (477/512) | 98.96% | Accepted |
+| **Iteration 4 (`flap_only_iter_4`)** | 28 | 7,168 | 1,312,503,296 (1,312.50M) | -14.98% (20.00% FLAP) | 92.77% (475/512) | 98.55% | Accepted |
+| **Iteration 5 (`flap_only_iter_5`)** | **28** | **6,720** | **1,254,700,544 (1,254.70M)** | **-18.72% (25.00% FLAP)** | **90.43% (463/512)** | **96.06%** | **Best Pareto Checkpoint** |
 
-> **Methodological Note on Benchmark Size**: A 16-sample smoke test confirms generation and answer extraction integrity, but has wide confidence intervals ($\pm 18\%$). PruneQuest implements **two-phase benchmark validation**: fast candidate screening on candidate subsets, followed by rigorous candidate acceptance evaluation on the full development benchmark split (e.g. 512 samples) or full GSM8K test set (1,319 samples) before committing any checkpoint.
+> **Key Finding**: PruneQuest compressed `Qwen/Qwen2.5-Math-1.5B-Instruct` down to **1,254,700,544 parameters** (removing **289.01M parameters**), reaching the configured 25.00% maximum compression limit while preserving **90.43% accuracy** (**96.06% retention** relative to the 94.14% baseline), passing all out-of-process reload and generation validation checks.
 
 ---
 
@@ -180,8 +182,16 @@ Joint Incremental Pruning Optimizer (JIPO) dynamically unifies structured depth 
 # Execute Joint Incremental Pruning Optimizer
 prunequest full-sweep --config configs/full_sweep.yaml
 
-# Or using the alias:
-prunequest full-pass --config configs/full_sweep.yaml
+# Or using the alias with runtime overrides and automatic checkpoint resumption:
+prunequest full-pass \
+  --config configs/full_sweep.yaml \
+  --model "Qwen/Qwen2.5-Math-1.5B-Instruct" \
+  --retain 0.95 \
+  --max-iterations 10 \
+  --batch-size 64 \
+  --device "cuda:0" \
+  --output "runs/full_sweep" \
+  --resume
 ```
 
 ### 6. Python API Example
@@ -278,9 +288,9 @@ PruneQuest/
 |       |-- state.py              # In-memory atomic snapshot & transactional rollback
 |       |-- tracker.py            # SQLite tracker with Pareto frontier analysis
 |       `-- optimizer.py          # 3-level progressive search optimizer
-|-- tests/                        # Comprehensive unit & integration test suite (60 tests)
+|-- tests/                        # Comprehensive unit & integration test suite (62 tests)
 |   |-- flap/                     # FLAP width pruning test suite (10 tests)
-|   |-- sweep/                    # Joint sweep optimizer test suite (4 tests)
+|   |-- sweep/                    # Joint sweep optimizer test suite (6 tests)
 |   |-- unit/                     # Block-based pruning & core unit tests (42 tests)
 |   `-- integration/              # CLI integration tests (4 tests)
 |-- LICENSE                       # Apache-2.0 License

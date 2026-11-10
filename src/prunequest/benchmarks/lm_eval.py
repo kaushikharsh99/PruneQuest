@@ -20,6 +20,9 @@ try:
     LM_EVAL_AVAILABLE = True
 except ImportError:
     LM_EVAL_AVAILABLE = False
+    simple_evaluate = None
+    TaskManager = None
+    HFLM = None
 
 
 class LMEvalBenchmarkAdapter(BaseBenchmark):

@@ -211,7 +211,7 @@ class GSM8KEvaluator:
         from tqdm import tqdm
 
         i = 0
-        pbar = tqdm(total=len(samples), desc=f"GSM8K Evaluation (Batch={curr_batch_size})")
+        pbar = tqdm(total=len(samples), desc=f"GSM8K Evaluation (Batch={curr_batch_size})", dynamic_ncols=True, leave=False)
 
         while i < len(samples):
             batch_samples = samples[i : i + curr_batch_size]
