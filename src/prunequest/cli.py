@@ -14,7 +14,6 @@ try:
 except (AttributeError, ValueError):
     pass
 import typer
-import click
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -340,46 +339,56 @@ def baseline(
 @block_app.command(name="run")
 def run(
     ctx: typer.Context,
-    model: str = typer.Option("Qwen/Qwen2.5-Math-1.5B-Instruct", "--model", "-m", help="Pretrained model ID or path"),
-    benchmark: str = typer.Option("gsm8k", "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
-    retain: float = typer.Option(0.99, "--retain", "-r", help="Minimum accuracy retention ratio [0.0 - 1.0]"),
-    max_iterations: int = typer.Option(3, "--max-iterations", "-i", help="Maximum pruning iterations"),
-    split: str = typer.Option("dev", "--split", "-s", help="dev, acceptance, smoke, or test"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Pretrained model ID or path"),
+    benchmark: Optional[str] = typer.Option(None, "--benchmark", "--benchmarks", "-b", help="One or more comma-separated benchmarks"),
+    retain: Optional[float] = typer.Option(None, "--retain", "-r", help="Minimum accuracy retention ratio [0.0 - 1.0]"),
+    max_iterations: Optional[int] = typer.Option(None, "--max-iterations", "-i", help="Maximum pruning iterations"),
+    split: Optional[str] = typer.Option(None, "--split", "-s", help="dev, acceptance, smoke, or test"),
     samples: Optional[int] = typer.Option(None, "--samples", "-n", help="Sample limit for benchmark evaluation"),
-    output: str = typer.Option("runs/prunequest_run", "--output", "--output-dir", "-o", help="Run directory"),
-    reports: str = typer.Option("reports", "--reports", help="Reports directory"),
-    device: str = typer.Option("cuda:0", "--device", "-d", help="Inference device"),
+    output: Optional[str] = typer.Option(None, "--output", "--output-dir", "-o", help="Run directory"),
+    reports: Optional[str] = typer.Option(None, "--reports", help="Reports directory"),
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Inference device"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config YAML"),
 ):
     """Execute complete autonomous, benchmark-guided pruning loop."""
     # Enforce Precedence: Explicit CLI Overrides > Configuration File > Application Defaults
     if config and os.path.exists(config):
         cfg = PruneQuestConfig.from_yaml(config)
-        if ctx.get_parameter_source("model") == click.core.ParameterSource.COMMANDLINE:
+        if model is not None:
             cfg.model.model_id = model
-        if ctx.get_parameter_source("device") == click.core.ParameterSource.COMMANDLINE:
+        if device is not None:
             cfg.model.device = device
-        if ctx.get_parameter_source("benchmark") == click.core.ParameterSource.COMMANDLINE:
+        if benchmark is not None:
             cfg.benchmark.name = benchmark
-        if ctx.get_parameter_source("split") == click.core.ParameterSource.COMMANDLINE:
+        if split is not None:
             cfg.benchmark.split = split
-        if ctx.get_parameter_source("samples") == click.core.ParameterSource.COMMANDLINE:
+        if samples is not None:
             cfg.benchmark.sample_limit = samples
-        if ctx.get_parameter_source("retain") == click.core.ParameterSource.COMMANDLINE:
+        if retain is not None:
             cfg.pruning.retain = retain
-        if ctx.get_parameter_source("max_iterations") == click.core.ParameterSource.COMMANDLINE:
+        if max_iterations is not None:
             cfg.pruning.max_iterations = max_iterations
-        if ctx.get_parameter_source("output") == click.core.ParameterSource.COMMANDLINE:
+        if output is not None:
             cfg.output_dir = output
-        if ctx.get_parameter_source("reports") == click.core.ParameterSource.COMMANDLINE:
+        if reports is not None:
             cfg.reports_dir = reports
     else:
         cfg = PruneQuestConfig(
-            model=ModelConfig(model_id=model, device=device),
-            benchmark=BenchmarkConfig(name=benchmark, split=split, sample_limit=samples),
-            pruning=PruningConfig(retain=retain, max_iterations=max_iterations),
-            output_dir=output,
-            reports_dir=reports,
+            model=ModelConfig(
+                model_id=model or "Qwen/Qwen2.5-Math-1.5B-Instruct",
+                device=device or "cuda:0",
+            ),
+            benchmark=BenchmarkConfig(
+                name=benchmark or "gsm8k",
+                split=split or "dev",
+                sample_limit=samples,
+            ),
+            pruning=PruningConfig(
+                retain=retain if retain is not None else 0.99,
+                max_iterations=max_iterations if max_iterations is not None else 3,
+            ),
+            output_dir=output or "runs/prunequest_run",
+            reports_dir=reports or "reports",
         )
 
     # Safe Defaults Inspection and User Guidance

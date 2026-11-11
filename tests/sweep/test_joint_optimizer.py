@@ -39,7 +39,7 @@ class DummyModel(PreTrainedModel):
             hidden_size=hidden_size,
             intermediate_size=intermediate_size,
             num_hidden_layers=num_layers,
-            layer_types=["dense"] * num_layers,
+            layer_types=["full_attention"] * num_layers,
         )
         super().__init__(config)
         self.model = nn.Module()
