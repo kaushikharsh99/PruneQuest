@@ -53,6 +53,11 @@ class AutoConfigBuilder:
         batch_size: Optional[int] = None,
         max_iterations: Optional[int] = None,
         seed: int = 42,
+        dataset: Optional[str] = None,
+        input_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+        metric: Optional[str] = None,
+        calibration_dataset: Optional[str] = None,
     ) -> tuple[Any, PruningStrategy, PresetConfig, str, str]:
         """
         Builds and returns the concrete configuration object along with metadata.
@@ -64,6 +69,41 @@ class AutoConfigBuilder:
         resolved_device = HardwareInspector.resolve_device(device)
         resolved_output = output_dir or cls.generate_run_dir(model_id)
         os.makedirs(resolved_output, exist_ok=True)
+
+        # Handle custom dataset onboarding (UX Release C)
+        effective_benchmark = benchmark
+        calib_data_name = calibration_dataset or ("openai/gsm8k" if benchmark == "gsm8k" else benchmark)
+
+        if dataset:
+            from prunequest.datasets.inspector import DatasetInspector
+            from prunequest.datasets.resolver import DatasetSourceResolver
+            from prunequest.datasets.spec_builder import BenchmarkSpecBuilder
+
+            ds_report = DatasetInspector.inspect(
+                dataset,
+                explicit_input=input_column,
+                explicit_target=target_column,
+                explicit_metric=metric,
+            )
+            resolved_src = DatasetSourceResolver.resolve(dataset)
+            clean_name = os.path.basename(dataset).split(".")[0] or "custom_dataset"
+
+            spec = BenchmarkSpecBuilder.build(
+                name=clean_name,
+                source=resolved_src.file_format or resolved_src.source_type.value,
+                path=resolved_src.path_or_id,
+                input_col=ds_report.input_column or "input",
+                target_col=ds_report.target_column or "target",
+                task_type=ds_report.task_type,
+                scorer=ds_report.proposed_scorer,
+                higher_is_better=ds_report.higher_is_better,
+                retention=retain,
+                revision=resolved_src.revision,
+            )
+            spec_path = os.path.join(resolved_output, "resolved_spec.yaml")
+            BenchmarkSpecBuilder.save_spec(spec, spec_path)
+            effective_benchmark = spec_path
+            calib_data_name = calibration_dataset or (dataset if resolved_src.is_local else "openai/gsm8k")
 
         # Resolve strategy
         if isinstance(strategy, str):
@@ -82,7 +122,7 @@ class AutoConfigBuilder:
                         torch_dtype="bfloat16",
                     ),
                     calibration=CalibrationConfig(
-                        dataset_name="openai/gsm8k" if benchmark == "gsm8k" else benchmark,
+                        dataset_name=calib_data_name,
                         num_samples=preset_cfg.calibration_samples,
                         screening_samples=preset_cfg.screening_samples,
                         acceptance_samples=preset_cfg.acceptance_samples,
@@ -97,6 +137,7 @@ class AutoConfigBuilder:
                         time_budget_sec=preset_cfg.time_budget_sec,
                     ),
                     evaluation=EvaluationConfig(
+                        benchmark=effective_benchmark,
                         batch_size=batch_size or 1,
                     ),
                     output_dir=resolved_output,
@@ -122,7 +163,7 @@ class AutoConfigBuilder:
                         torch_dtype="bfloat16",
                     ),
                     calibration=CalibrationConfig(
-                        dataset_name="openai/gsm8k" if benchmark == "gsm8k" else benchmark,
+                        dataset_name=calib_data_name,
                         num_samples=preset_cfg.calibration_samples,
                         screening_samples=preset_cfg.screening_samples,
                         acceptance_samples=preset_cfg.acceptance_samples,
@@ -135,6 +176,7 @@ class AutoConfigBuilder:
                         minimum_step_ratio=preset_cfg.minimum_flap_ratio,
                     ),
                     evaluation=EvaluationConfig(
+                        benchmark=effective_benchmark,
                         batch_size=batch_size or 1,
                         screening_loss_factor=preset_cfg.screening_loss_factor,
                     ),
@@ -158,7 +200,7 @@ class AutoConfigBuilder:
                         torch_dtype="bfloat16",
                     ),
                     benchmark=BenchmarkConfig(
-                        name=benchmark,
+                        name=effective_benchmark,
                         split="dev",
                         sample_limit=preset_cfg.acceptance_samples,
                         seed=seed,

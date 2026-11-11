@@ -88,6 +88,31 @@ flowchart TD
 
 ---
 
+## PruneQuest Studio: Local-First Web Interface
+
+PruneQuest Studio offers an intuitive, browser-based user experience inspired by modern developer tooling. Run one command to launch your local dashboard with zero configuration:
+
+```bash
+# 1. Install with Studio web dependencies
+pip install "prunequest[studio]"
+
+# 2. Launch Studio (automatically opens your default browser at http://127.0.0.1:8765)
+prunequest studio
+
+# Or run with custom port and flags:
+prunequest studio --port 9000 --no-browser
+```
+
+### Studio Capabilities
+- **Local-First & Private**: Runs 100% on your machine with loopback binding (`127.0.0.1`), host header validation, and CSRF origin protection. No cloud accounts or telemetry required.
+- **Guided Setup**: Select popular Hugging Face models or enter any model ID with instant architecture tier and memory estimation.
+- **Dataset Onboarding**: Effortlessly switch between catalog benchmarks (`gsm8k`, `arc_challenge`, `mmlu`) and local custom datasets (`.json`, `.jsonl`, `.csv`, `.parquet`) with zero YAML.
+- **Live SSE Progress**: Real-time Server-Sent Events track candidate decisions, parameter reduction, and benchmark accuracy retention without polling.
+- **Disconnection Resilience**: Closing or refreshing the browser never interrupts the background optimization job. Reopening Studio reconnects automatically.
+- **Experiment Library & Comparison**: Browse previous runs, view detailed reports, compare candidates side-by-side, and resume interrupted searches.
+
+---
+
 ## Quickstart: One-Command Pruning
 
 Compress any supported Hugging Face model with zero YAML configuration. PruneQuest automatically diagnoses your hardware, inspects model architecture, selects the optimal pruning strategy, establishes the unpruned baseline, searches for the smallest viable model, and verifies the final checkpoint:
@@ -99,17 +124,20 @@ prunequest optimize Qwen/Qwen2.5-0.5B-Instruct
 # 2. Specify benchmark and retention target (e.g. 98% accuracy retention on GSM8K)
 prunequest optimize meta-llama/Llama-3.2-1B-Instruct --benchmark gsm8k --retain 0.98
 
-# 3. Choose a budget preset: quick (fast check), balanced (recommended), thorough (deep search)
+# 3. Optimize on custom local datasets (JSON, JSONL, CSV, Parquet) or Hugging Face datasets
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --dataset data/qa.jsonl --target-retain 0.98
+
+# 4. Choose a budget preset: quick (fast check), balanced (recommended), thorough (deep search)
 prunequest optimize Qwen/Qwen2.5-Math-1.5B-Instruct --preset quick
 
-# 4. Dry-run preflight inspection without downloading weights
+# 5. Dry-run preflight inspection without downloading weights
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --dry-run
 
-# 5. Output pure machine-readable JSON summary or stream real-time events
+# 6. Output pure machine-readable JSON summary or stream real-time events
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json-events
 
-# 6. Resume an interrupted optimization run safely
+# 7. Resume an interrupted optimization run safely
 prunequest resume runs/qwen2_5_0_5b_instruct_20261111_120000
 ```
 
@@ -210,7 +238,28 @@ prunequest benchmarks search gsm8k
 prunequest benchmarks info gsm8k
 ```
 
-### 5. Advanced Pruning Workflows
+### 5. Universal Dataset Onboarding (Zero-YAML Evaluation)
+
+PruneQuest seamlessly ingests custom datasets without writing benchmark YAML files. Point PruneQuest to local files (`.json`, `.jsonl`, `.csv`, `.parquet`) or Hugging Face datasets:
+
+```bash
+# 1. Inspect dataset columns, types, sample counts, and auto-inferred task type
+prunequest datasets inspect ./data/my_eval.jsonl
+
+# 2. Preview formatted evaluation prompts and target answers
+prunequest datasets preview ./data/my_eval.jsonl --samples 3
+
+# 3. Validate split partitions, column cleanliness, and verify absence of data leakage
+prunequest datasets validate ./data/my_eval.jsonl
+
+# 4. Run autonomous optimization directly against the custom dataset
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct \
+  --dataset ./data/my_eval.jsonl \
+  --target-retain 0.98 \
+  --preset balanced
+```
+
+### 6. Advanced Pruning Workflows
 
 For power users requiring granular control over algorithmic parameters, PruneQuest provides direct commands:
 
@@ -344,16 +393,6 @@ Validate and preview YAML specs using the CLI:
 prunequest benchmarks validate --spec benchmark.yaml
 prunequest benchmarks preview --spec benchmark.yaml --limit 3
 ```
-
----
-
-## Roadmap
-
-- [x] **v0.1.0**: Initial foundational release (Qwen2 adapter, layer pruning, Block Influence, GSM8K, Typer CLI, SQLite tracking).
-- [x] **v0.1.1**: Reliability & Benchmark Correctness (Two-phase candidate screening and dev benchmark validation, baseline preservation on resume, subprocess reload validation rejection safeguards, strict Ruff CI pass, expanded offline unit testing suite).
-- [x] **v0.2.0**: Universal LLM Pruning Framework (ModelInspector architecture discovery, 4 capability tiers, LLaMA-2/3, Mistral, Gemma, and Phi adapters, LM Evaluation Harness integration with 14,222+ tasks, declarative YAML BenchmarkSpec compiler, directional MetricSpec and multi-benchmark ConstraintSuite).
-- [x] **v0.3.0**: Granular MLP Width Pruning: FLAP-based SwiGLU intermediate channel slicing, proxy screening, adaptive step-back halving, and VRAM-conscious batched GSM8K evaluation.
-- [ ] **v0.4.0**: Granular Head Pruning: Multi-head / Grouped-query attention head pruning with dynamic projection recalculation and multi-GPU DDP search support.
 
 ---
 

@@ -293,3 +293,96 @@ def test_cli_report_regeneration():
         assert os.path.exists(os.path.join(run_dir, "reports", "detailed_report.md"))
 
 
+def test_cli_datasets_commands():
+    import json
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_path = os.path.join(tmpdir, "qa.jsonl")
+        with open(data_path, "w", encoding="utf-8") as f:
+            for i in range(50):
+                f.write(json.dumps({"question": f"Question {i}?", "answer": f"Answer {i}"}) + "\n")
+
+        # 1. datasets inspect (terminal & json)
+        res_insp = runner.invoke(app, ["datasets", "inspect", data_path])
+        assert res_insp.exit_code == 0
+        clean_insp = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_insp.stdout)
+        assert "PruneQuest Dataset Inspection" in clean_insp
+        assert "question" in clean_insp
+        assert "answer" in clean_insp
+
+        res_insp_json = runner.invoke(app, ["datasets", "inspect", data_path, "--json"])
+        assert res_insp_json.exit_code == 0
+        insp_data = json.loads(res_insp_json.stdout)
+        assert insp_data["input_column"] == "question"
+        assert insp_data["target_column"] == "answer"
+        assert insp_data["task_type"] == "exact_answer"
+
+        # 2. datasets preview (terminal & json)
+        res_prev = runner.invoke(app, ["datasets", "preview", data_path, "--limit", "2"])
+        assert res_prev.exit_code == 0
+        clean_prev = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_prev.stdout)
+        assert "PruneQuest Dataset Prompt Preview" in clean_prev
+        assert "Question 0?" in clean_prev
+
+        res_prev_json = runner.invoke(app, ["datasets", "preview", data_path, "--limit", "2", "--json"])
+        assert res_prev_json.exit_code == 0
+        prev_data = json.loads(res_prev_json.stdout)
+        assert len(prev_data) == 2
+
+        # 3. datasets validate (terminal & json)
+        res_val = runner.invoke(app, [
+            "datasets", "validate", data_path,
+            "--calibration-size", "10",
+            "--screening-size", "5",
+            "--dev-size", "20",
+        ])
+        assert res_val.exit_code == 0
+        clean_val = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res_val.stdout)
+        assert "Dataset Validation PASSED" in clean_val
+
+        res_val_json = runner.invoke(app, [
+            "datasets", "validate", data_path,
+            "--calibration-size", "10",
+            "--screening-size", "5",
+            "--dev-size", "20",
+            "--json",
+        ])
+        assert res_val_json.exit_code == 0
+        val_data = json.loads(res_val_json.stdout)
+        assert val_data["is_valid"] is True
+        assert val_data["partition_counts"]["calibration"] == 10
+
+
+def test_cli_optimize_with_custom_dataset():
+    import json
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_path = os.path.join(tmpdir, "math.jsonl")
+        with open(data_path, "w", encoding="utf-8") as f:
+            for i in range(50):
+                f.write(json.dumps({"problem": f"What is {i}+{i}?", "solution": f"#### {2*i}"}) + "\n")
+
+        # Dry-run optimization using custom dataset
+        result = runner.invoke(app, [
+            "optimize",
+            "Qwen/Qwen2.5-0.5B-Instruct",
+            "--dataset", data_path,
+            "--dry-run",
+            "--preset", "quick",
+        ])
+        assert result.exit_code == 0
+        clean_stdout = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
+        assert "Optimization Plan (Preflight)" in clean_stdout
+        assert "Dataset Objective" in clean_stdout
+        assert "Preflight completed. No model weights modified." in clean_stdout
+
+
+def test_cli_studio_help():
+    result = runner.invoke(app, ["studio", "--help"])
+    assert result.exit_code == 0
+    clean_stdout = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
+    assert "Launch PruneQuest Studio" in clean_stdout
+    assert "host" in clean_stdout
+    assert "port" in clean_stdout
+    assert "no-browser" in clean_stdout
+
+
+

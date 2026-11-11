@@ -39,6 +39,10 @@ class PreflightPlan:
     calibration_samples: int
     screening_samples: int
     acceptance_samples: int
+    dataset: Optional[str] = None
+    dataset_format: Optional[str] = None
+    dataset_task_type: Optional[str] = None
+    dataset_scorer: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
 
 
@@ -58,6 +62,11 @@ class PreflightChecker:
         strategy: PruningStrategy | str = PruningStrategy.AUTO,
         device: str = "auto",
         output_dir: str = "runs/preview",
+        dataset: Optional[str] = None,
+        input_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+        metric: Optional[str] = None,
+        calibration_dataset: Optional[str] = None,
     ) -> PreflightPlan:
         if isinstance(strategy, str):
             strategy = PruningStrategy(strategy.lower())
@@ -68,6 +77,29 @@ class PreflightChecker:
         resolved_strat, reason, report = StrategyResolver.resolve(model_id, strategy)
         hw = HardwareInspector.inspect()
         resolved_device = HardwareInspector.resolve_device(device)
+
+        # Inspect dataset if provided
+        dataset_fmt = None
+        dataset_task = None
+        dataset_scorer = None
+        warnings: List[str] = []
+
+        if dataset:
+            from prunequest.datasets.inspector import DatasetInspector
+            try:
+                ds_report = DatasetInspector.inspect(
+                    dataset,
+                    explicit_input=input_column,
+                    explicit_target=target_column,
+                    explicit_metric=metric,
+                )
+                dataset_fmt = ds_report.format
+                dataset_task = ds_report.task_type
+                dataset_scorer = ds_report.proposed_scorer
+                if ds_report.warnings:
+                    warnings.extend(ds_report.warnings)
+            except Exception as e:
+                warnings.append(f"Dataset preflight warning: {e}")
 
         desc = report.descriptor
         num_layers = desc.num_hidden_layers or 28
@@ -122,6 +154,10 @@ class PreflightChecker:
             calibration_samples=preset_cfg.calibration_samples,
             screening_samples=preset_cfg.screening_samples,
             acceptance_samples=preset_cfg.acceptance_samples,
+            dataset=dataset,
+            dataset_format=dataset_fmt,
+            dataset_task_type=dataset_task,
+            dataset_scorer=dataset_scorer,
             warnings=warnings,
         )
 
@@ -142,7 +178,11 @@ class PreflightChecker:
         table.add_row("Model ID", plan.model_id)
         table.add_row("Architecture Class", f"{plan.model_type} ({plan.architecture_class})")
         table.add_row("Dimensions", f"{plan.layers} Layers | Hidden: {plan.hidden_size} | MLP: {plan.intermediate_size}")
-        table.add_row("Benchmark Objective", plan.benchmark.upper())
+        if plan.dataset:
+            table.add_row("Dataset Objective", f"{plan.dataset} ({plan.dataset_format})")
+            table.add_row("Task & Scorer", f"{plan.dataset_task_type} | {plan.dataset_scorer}")
+        else:
+            table.add_row("Benchmark Objective", plan.benchmark.upper())
         table.add_row("Accuracy Retention", f"[bold green]{plan.retention * 100:.1f}%[/bold green] (Measured on Holdout Dev)")
         table.add_row("Preset", f"{plan.preset.value.upper()} (Calib: {plan.calibration_samples}, Screen: {plan.screening_samples}, Dev: {plan.acceptance_samples})")
         table.add_row("Pruning Strategy", f"[bold yellow]{plan.strategy.value.upper()}[/bold yellow] ({plan.strategy_reason})")

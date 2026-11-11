@@ -235,7 +235,7 @@ def test_joint_optimizer_block_failure_lock_and_cumulative_flap(tmp_path):
     assert summary["status"] == "completed"
 
     # Verify cumulative parameters tracking
-    accepted_trials = [r for r in optimizer.tracker.records if r.get("status") == "accepted"]
+    accepted_trials = [r for r in optimizer.tracker.records if r.get("status") == "accepted" and r.get("action_type") != "baseline"]
     assert len(accepted_trials) == 2
     assert accepted_trials[0]["params_removed"] > 0
     assert accepted_trials[1]["params_removed"] > accepted_trials[0]["params_removed"]

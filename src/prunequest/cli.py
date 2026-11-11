@@ -40,6 +40,7 @@ from prunequest.reporting.metrics import clean_gpu_memory
 from prunequest.orchestrator.optimizer import UnifiedOptimizer
 from prunequest.runs import RunManager
 from prunequest.reporting import UnifiedReportGenerator
+from prunequest.datasets import DatasetInspector, DatasetPreviewer
 
 from prunequest.flap.cli import app as flap_app
 
@@ -62,6 +63,9 @@ app.add_typer(benchmarks_app, name="benchmarks")
 
 runs_app = typer.Typer(help="Manage, inspect, compare, and view logs of optimization runs.")
 app.add_typer(runs_app, name="runs")
+
+datasets_app = typer.Typer(help="Universal dataset inspection, validation, and preview.")
+app.add_typer(datasets_app, name="datasets")
 
 console = Console()
 
@@ -458,6 +462,11 @@ def run(
 def optimize_cmd(
     model: str = typer.Argument(..., help="Hugging Face model ID or local directory to optimize"),
     benchmark: str = typer.Option("gsm8k", "--benchmark", "-b", help="Benchmark guiding pruning (e.g. gsm8k, arc_easy)"),
+    dataset: Optional[str] = typer.Option(None, "--dataset", "-D", help="Custom evaluation dataset path (.jsonl, .csv, .parquet) or Hugging Face dataset ID"),
+    input_column: Optional[str] = typer.Option(None, "--input-column", help="Explicit input/prompt column name"),
+    target_column: Optional[str] = typer.Option(None, "--target-column", help="Explicit target/gold answer column name"),
+    metric: Optional[str] = typer.Option(None, "--metric", help="Explicit evaluation metric (exact_match, normalized_match, numeric_exact_match, math_verify, multiple_choice)"),
+    calibration_dataset: Optional[str] = typer.Option(None, "--calibration-dataset", help="Optional separate calibration dataset path or ID"),
     retain: float = typer.Option(0.99, "--retain", "-r", help="Target minimum accuracy retention (e.g. 0.99 for 99%)"),
     preset: str = typer.Option("balanced", "--preset", "-p", help="Optimization budget preset: quick | balanced | thorough"),
     strategy: str = typer.Option("auto", "--strategy", "-s", help="Pruning strategy: auto | joint | flap | block"),
@@ -504,6 +513,11 @@ def optimize_cmd(
             json_output=json_output,
             json_events=json_events,
             console=cmd_console,
+            dataset=dataset,
+            input_column=input_column,
+            target_column=target_column,
+            metric=metric,
+            calibration_dataset=calibration_dataset,
         )
         if res.status == "failed":
             raise typer.Exit(1)
@@ -693,6 +707,148 @@ def runs_logs(
         )
 
     console.print(table)
+
+
+# =========================================================================
+# Datasets Command Group (UX Release C: Universal Dataset Onboarding)
+# =========================================================================
+
+@datasets_app.command(name="inspect")
+def datasets_inspect(
+    source: str = typer.Argument(..., help="Path to local file (.jsonl, .csv, .parquet) or Hugging Face dataset ID"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Dataset configuration or subset name"),
+    revision: Optional[str] = typer.Option("main", "--revision", help="Git revision or branch"),
+    split: Optional[str] = typer.Option(None, "--split", "-s", help="Specific split to inspect"),
+    input_column: Optional[str] = typer.Option(None, "--input-column", help="Explicit input column override"),
+    target_column: Optional[str] = typer.Option(None, "--target-column", help="Explicit target column override"),
+    metric: Optional[str] = typer.Option(None, "--metric", help="Explicit evaluation metric override"),
+    json_output: bool = typer.Option(False, "--json", help="Output inspection report as pure JSON"),
+):
+    """Inspect dataset source, detect fields, infer task type and verified scorer without loading model weights."""
+    try:
+        report = DatasetInspector.inspect(
+            source=source,
+            config=config,
+            revision=revision,
+            split=split,
+            explicit_input=input_column,
+            explicit_target=target_column,
+            explicit_metric=metric,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Dataset inspection failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    if json_output:
+        print(report.model_dump_json(indent=2))
+        return
+
+    table = Table(title=f"[bold green]PruneQuest Dataset Inspection — {source}[/bold green]")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="magenta")
+
+    table.add_row("Source", report.source)
+    table.add_row("Source Type", report.source_type.upper())
+    table.add_row("Format", report.format.upper())
+    table.add_row("Estimated Samples", f"{report.total_samples:,}" if report.total_samples else "Unknown")
+    table.add_row("Detected Splits", ", ".join(report.detected_splits) if report.detected_splits else "None")
+    table.add_row("Columns", ", ".join(report.columns))
+    table.add_row("Resolved Input", report.input_column or "[red]Unresolved[/red]")
+    table.add_row("Resolved Target", report.target_column or "[red]Unresolved[/red]")
+    conf_color = "green" if report.mapping_confidence == "high" else "yellow" if report.mapping_confidence == "ambiguous" else "red"
+    table.add_row("Mapping Confidence", f"[{conf_color}]{report.mapping_confidence.upper()}[/{conf_color}]")
+    table.add_row("Detected Task", report.task_type.upper())
+    dir_str = "Higher is better" if report.higher_is_better else "Lower is better"
+    table.add_row("Proposed Scorer", f"{report.proposed_scorer} ({dir_str})")
+
+    console.print(table)
+
+    if report.warnings:
+        for w in report.warnings:
+            console.print(f"[bold yellow]⚠ Warning:[/bold yellow] {w}")
+
+    if report.sample_preview:
+        console.print("\n")
+        console.print(DatasetPreviewer.build_preview_table(report.sample_preview))
+
+
+@datasets_app.command(name="preview")
+def datasets_preview(
+    source: str = typer.Argument(..., help="Dataset path or Hugging Face identifier"),
+    limit: int = typer.Option(3, "--limit", "-l", help="Number of preview samples to render"),
+    input_column: Optional[str] = typer.Option(None, "--input-column", help="Explicit input column override"),
+    target_column: Optional[str] = typer.Option(None, "--target-column", help="Explicit target column override"),
+    template: str = typer.Option("{{ input }}", "--template", help="Prompt template (must contain '{{ input }}')"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", help="Optional system instruction"),
+    json_output: bool = typer.Option(False, "--json", help="Output preview items as JSON"),
+):
+    """Preview rendered model prompts and reference answers from a dataset."""
+    import json
+    try:
+        previews = DatasetInspector.preview(
+            source=source,
+            limit=limit,
+            explicit_input=input_column,
+            explicit_target=target_column,
+            prompt_template=template,
+            system_prompt=system_prompt,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Dataset preview failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    if json_output:
+        print(json.dumps(previews, indent=2))
+        return
+
+    console.print(DatasetPreviewer.build_preview_table(previews))
+
+
+@datasets_app.command(name="validate")
+def datasets_validate(
+    source: str = typer.Argument(..., help="Dataset path or Hugging Face identifier"),
+    input_column: Optional[str] = typer.Option(None, "--input-column", help="Explicit input column override"),
+    target_column: Optional[str] = typer.Option(None, "--target-column", help="Explicit target column override"),
+    metric: Optional[str] = typer.Option(None, "--metric", help="Explicit evaluation metric override"),
+    calibration_size: int = typer.Option(128, "--calibration-size", help="Calibration sample count"),
+    screening_size: int = typer.Option(64, "--screening-size", help="Screening sample count"),
+    dev_size: int = typer.Option(512, "--dev-size", help="Development sample count"),
+    seed: int = typer.Option(42, "--seed", help="Random seed for partitioning"),
+    json_output: bool = typer.Option(False, "--json", help="Output validation report as JSON"),
+):
+    """Validate dataset schema, columns, scorer compatibility, and partition disjointness."""
+    val = DatasetInspector.validate(
+        source=source,
+        explicit_input=input_column,
+        explicit_target=target_column,
+        explicit_metric=metric,
+        calibration_size=calibration_size,
+        screening_size=screening_size,
+        dev_size=dev_size,
+        seed=seed,
+    )
+
+    if json_output:
+        print(val.model_dump_json(indent=2))
+        if not val.is_valid:
+            raise typer.Exit(1)
+        return
+
+    if val.is_valid:
+        console.print(Panel(
+            f"[bold green]✔ Dataset Validation PASSED: {source}[/bold green]\n"
+            f"[dim]Task: {val.task_type.upper()} | Scorer: {val.scorer} | "
+            f"Input: {val.input_column} | Target: {val.target_column}[/dim]\n"
+            f"[dim]Partitions: {val.partition_counts}[/dim]",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel(
+            f"[bold red]✗ Dataset Validation FAILED: {source}[/bold red]\n"
+            + "\n".join(f"[red]• {err}[/red]" for err in val.errors),
+            border_style="red",
+        ))
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -920,6 +1076,18 @@ def full_sweep(
     table.add_row("Resolved Config Saved", resolved_path)
 
     console.print(table)
+
+
+@app.command("studio")
+def studio_command(
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host interface to bind"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Port number (defaults to 8765 or first free port)"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the browser automatically"),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload for local development"),
+):
+    """Launch PruneQuest Studio local web application."""
+    from prunequest.studio import launch_studio
+    launch_studio(host=host, port=port, no_browser=no_browser, reload=reload)
 
 
 def main():

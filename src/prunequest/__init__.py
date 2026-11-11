@@ -8,7 +8,15 @@ PruneQuest: Autonomous, Benchmark-Guided LLM Structural Pruning Framework.
 
 __version__ = "0.3.0"
 
-from prunequest.api import PruneQuest, PruneQuestResult, optimize
+from prunequest.api import (
+    PruneQuest,
+    PruneQuestResult,
+    optimize,
+    studio,
+    inspect_dataset,
+    validate_dataset,
+    preview_dataset,
+)
 from prunequest.orchestrator.optimizer import OptimizationResult
 from prunequest.config import PruneQuestConfig
 from prunequest.flap.config import FLAPConfig
@@ -16,9 +24,19 @@ from prunequest.flap.core.optimizer import FLAPOptimizer
 from prunequest.events import OptimizationEvent, EventBus, EventCategory, EventPhase
 from prunequest.runs import RunManager, RunSummary, RunDetails, RunComparison
 from prunequest.reporting import UnifiedReportGenerator
+from prunequest.datasets import (
+    DatasetSourceResolver,
+    DatasetInspector,
+    DatasetInspectionReport,
+    DatasetValidationReport,
+)
 
 __all__ = [
     "optimize",
+    "studio",
+    "inspect_dataset",
+    "validate_dataset",
+    "preview_dataset",
     "OptimizationResult",
     "PruneQuest",
     "PruneQuestResult",
@@ -34,4 +52,8 @@ __all__ = [
     "RunDetails",
     "RunComparison",
     "UnifiedReportGenerator",
+    "DatasetSourceResolver",
+    "DatasetInspector",
+    "DatasetInspectionReport",
+    "DatasetValidationReport",
 ]

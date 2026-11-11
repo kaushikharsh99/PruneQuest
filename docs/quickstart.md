@@ -16,8 +16,8 @@ cd PruneQuest
 # Core installation (CLI + core pruning framework)
 pip install -e .
 
-# Optional: install development testing and LM Evaluation Harness extras
-pip install -e ".[dev,eval]"
+# Optional: install Studio web interface, test suite, and LM Evaluation Harness extras
+pip install -e ".[dev,eval,studio]"
 ```
 
 ---
@@ -73,7 +73,29 @@ prunequest benchmarks validate --spec configs/default.yaml
 
 ---
 
-## 5. One-Command Optimization (`prunequest optimize`)
+## 5. PruneQuest Studio: Local-First Web Interface (`prunequest studio`)
+
+PruneQuest Studio offers an intuitive, browser-based user experience for zero-configuration pruning:
+
+```bash
+# Launch Studio (automatically binds to 127.0.0.1 and opens your default browser)
+prunequest studio
+
+# Custom port or headless launch:
+prunequest studio --port 9000 --no-browser
+```
+
+### Python API Integration
+```python
+import prunequest
+
+# Launch Studio programmatically
+prunequest.studio(port=8765)
+```
+
+---
+
+## 6. One-Command Optimization (`prunequest optimize`)
 
 The recommended way to prune any model is using `prunequest optimize`. You do not need to understand FLAP, Block Influence, JIPO, calibration, or manual YAML configurations:
 
@@ -84,17 +106,20 @@ prunequest optimize Qwen/Qwen2.5-0.5B-Instruct
 # 2. Specify target retention and benchmark
 prunequest optimize meta-llama/Llama-3.2-1B-Instruct --benchmark gsm8k --retain 0.98
 
-# 3. Choose a budget preset: quick (diagnostic check), balanced (recommended), thorough (maximum search depth)
+# 3. Optimize on custom local datasets (JSON, JSONL, CSV, Parquet) or Hugging Face datasets
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --dataset data/qa.jsonl --target-retain 0.98
+
+# 4. Choose a budget preset: quick (diagnostic check), balanced (recommended), thorough (maximum search depth)
 prunequest optimize Qwen/Qwen2.5-Math-1.5B-Instruct --preset quick
 
-# 4. Dry-run preflight inspection without downloading weights
+# 5. Dry-run preflight inspection without downloading weights
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --dry-run
 
-# 5. Output pure machine-readable JSON summary or stream events
+# 6. Output pure machine-readable JSON summary or stream events
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json-events
 
-# 6. Disable interactive live dashboard for plain log output
+# 7. Disable interactive live dashboard for plain log output
 prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --no-progress
 ```
 
@@ -121,7 +146,56 @@ runs/qwen2_5_0_5b_instruct_20261111_120000/
 
 ---
 
-## 6. Experiment Management (`prunequest runs`)
+## 7. Universal Dataset Onboarding & Zero-YAML Evaluation
+
+PruneQuest allows using custom datasets without creating benchmark YAML files. Pass local files (`.json`, `.jsonl`, `.csv`, `.parquet`) or Hugging Face dataset IDs directly:
+
+```bash
+# 1. Inspect dataset schema, candidate columns, row count, and auto-inferred task
+prunequest datasets inspect ./data/my_eval.jsonl
+
+# 2. Preview formatted evaluation prompts and target completions
+prunequest datasets preview ./data/my_eval.jsonl --samples 3
+
+# 3. Validate split partitions, duplicate detection, and data leakage prevention
+prunequest datasets validate ./data/my_eval.jsonl
+
+# 4. Run autonomous optimization against your dataset
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct \
+  --dataset ./data/my_eval.jsonl \
+  --target-retain 0.98 \
+  --preset balanced
+```
+
+### Python API Integration
+
+```python
+import prunequest
+
+# Inspect dataset
+report = prunequest.inspect_dataset("./data/my_eval.jsonl")
+print(f"Detected task: {report.detected_task.value}, samples: {report.schema_info.num_records}")
+
+# Validate data integrity
+val_report = prunequest.validate_dataset("./data/my_eval.jsonl")
+assert val_report.valid, f"Dataset validation failed: {val_report.errors}"
+
+# Preview sample prompts
+samples = prunequest.preview_dataset("./data/my_eval.jsonl", limit=3)
+for s in samples:
+    print(s["prompt"])
+
+# Autonomous one-command optimization
+result = prunequest.optimize(
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    dataset="./data/my_eval.jsonl",
+    target_retain=0.98,
+)
+```
+
+---
+
+## 8. Experiment Management (`prunequest runs`)
 
 PruneQuest provides commands to discover, inspect, compare, and view logs of prior optimization experiments without loading model weights:
 
@@ -146,7 +220,7 @@ prunequest report runs/qwen2_5_0_5b_instruct_20261111_120000
 
 ---
 
-## 6. 5-Minute Quickstart: Pipeline Smoke Test
+## 9. 5-Minute Quickstart: Pipeline Smoke Test
 
 To verify that the entire pipeline (scoring, candidate proposal, screening, checkpoint export, and subprocess reload validation) functions on your system, execute a lightweight 1-iteration smoke check:
 
@@ -164,7 +238,7 @@ prunequest block-based run \
 
 ---
 
-## 7. Production Workflows
+## 10. Production Workflows
 
 For power users requiring granular control over algorithmic parameters, PruneQuest provides direct commands:
 

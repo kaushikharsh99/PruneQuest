@@ -96,6 +96,12 @@ class UnifiedOptimizer:
         console: Optional[Console] = None,
         on_progress: Optional[Callable[[OptimizationEvent], None]] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        dataset: Optional[str] = None,
+        input_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+        metric: Optional[str] = None,
+        calibration_dataset: Optional[str] = None,
     ) -> OptimizationResult:
         console = console or Console()
         start_time = time.time()
@@ -112,6 +118,11 @@ class UnifiedOptimizer:
             strategy=strategy,
             device=device,
             output_dir=resolved_run_dir,
+            dataset=dataset,
+            input_column=input_column,
+            target_column=target_column,
+            metric=metric,
+            calibration_dataset=calibration_dataset,
         )
 
         if dry_run:
@@ -150,6 +161,11 @@ class UnifiedOptimizer:
             config_path=config,
             batch_size=batch_size,
             max_iterations=max_iterations,
+            dataset=dataset,
+            input_column=input_column,
+            target_column=target_column,
+            metric=metric,
+            calibration_dataset=calibration_dataset,
         )
 
         run_id = os.path.basename(run_dir)
@@ -168,6 +184,12 @@ class UnifiedOptimizer:
         # Wire user callback if provided
         if on_progress:
             event_bus.subscribe(on_progress)
+
+        if cancel_check:
+            def _check_cancellation(ev: OptimizationEvent):
+                if cancel_check():
+                    raise KeyboardInterrupt("Optimization cancelled by user request.")
+            event_bus.subscribe(_check_cancellation)
 
         # Progress UI selection
         dashboard: Optional[LiveProgressDashboard] = None
@@ -195,6 +217,38 @@ class UnifiedOptimizer:
                 "output_dir": run_dir,
             },
         )
+
+        if dataset:
+            event_bus.emit(
+                EventCategory.DATASET_INSPECTION_STARTED,
+                EventPhase.PREFLIGHT,
+                {"source": dataset},
+            )
+            event_bus.emit(
+                EventCategory.FIELD_MAPPING_RESOLVED,
+                EventPhase.PREFLIGHT,
+                {"input_column": input_column, "target_column": target_column},
+            )
+            event_bus.emit(
+                EventCategory.TASK_TYPE_RESOLVED,
+                EventPhase.PREFLIGHT,
+                {"task_type": plan.dataset_task_type},
+            )
+            event_bus.emit(
+                EventCategory.SCORER_RESOLVED,
+                EventPhase.PREFLIGHT,
+                {"scorer": plan.dataset_scorer},
+            )
+            event_bus.emit(
+                EventCategory.DATASET_PARTITIONING_COMPLETED,
+                EventPhase.PREFLIGHT,
+                {
+                    "calibration_samples": preset_cfg.calibration_samples,
+                    "screening_samples": preset_cfg.screening_samples,
+                    "acceptance_samples": preset_cfg.acceptance_samples,
+                },
+            )
+
         event_bus.emit(EventCategory.PREFLIGHT_COMPLETED, EventPhase.PREFLIGHT)
 
         # Save resolved configuration
@@ -219,6 +273,8 @@ class UnifiedOptimizer:
                     EventPhase.MODEL_LOADING,
                     {"total_params": optimizer.baseline_params},
                 )
+                event_bus.emit(EventCategory.BASELINE_STARTED, EventPhase.BASELINE)
+                optimizer.run_baseline()
                 event_bus.emit(
                     EventCategory.BASELINE_COMPLETED,
                     EventPhase.BASELINE,
@@ -231,9 +287,9 @@ class UnifiedOptimizer:
 
                 best_dict = raw_res.get("best_checkpoint") or {}
                 best_ckpt_source = best_dict.get("checkpoint_path")
-                orig_params = raw_res.get("baseline_params", 0)
+                orig_params = raw_res.get("baseline_params", optimizer.baseline_params)
                 final_params = best_dict.get("params_after", orig_params)
-                base_acc = raw_res.get("baseline_accuracy", 0.0)
+                base_acc = raw_res.get("baseline_accuracy", optimizer.baseline_accuracy)
                 final_acc = best_dict.get("accuracy", base_acc)
 
             elif resolved_strat == PruningStrategy.FLAP:
@@ -245,6 +301,8 @@ class UnifiedOptimizer:
                     EventPhase.MODEL_LOADING,
                     {"total_params": optimizer.baseline_params},
                 )
+                event_bus.emit(EventCategory.BASELINE_STARTED, EventPhase.BASELINE)
+                optimizer.establish_baseline()
                 event_bus.emit(
                     EventCategory.BASELINE_COMPLETED,
                     EventPhase.BASELINE,
@@ -255,21 +313,33 @@ class UnifiedOptimizer:
                 raw_res = optimizer.optimize(resume=resume)
 
                 best_ckpt_source = raw_res.get("best_checkpoint")
-                orig_params = raw_res.get("original_params", 0)
+                orig_params = raw_res.get("original_params", optimizer.baseline_params)
                 final_params = raw_res.get("final_params", orig_params)
-                base_acc = raw_res.get("baseline_accuracy", 0.0)
+                base_acc = raw_res.get("baseline_accuracy", optimizer.baseline_accuracy)
                 final_acc = raw_res.get("final_accuracy", base_acc)
 
             elif resolved_strat == PruningStrategy.BLOCK:
                 from prunequest.core.controller import SearchController
                 controller = SearchController(cfg)
                 event_bus.emit(EventCategory.MODEL_LOADED, EventPhase.MODEL_LOADING)
+                event_bus.emit(EventCategory.BASELINE_STARTED, EventPhase.BASELINE)
+                if controller.baseline_accuracy is None:
+                    controller.run_baseline()
+                event_bus.emit(
+                    EventCategory.BASELINE_COMPLETED,
+                    EventPhase.BASELINE,
+                    {
+                        "accuracy": controller.baseline_accuracy or 0.0,
+                        "total_params": controller.baseline_params or 0,
+                    },
+                )
+                event_bus.emit(EventCategory.PROFILING_COMPLETED, EventPhase.PROFILING)
                 raw_res = controller.run(progress_callback=progress_callback)
 
                 best_ckpt_source = raw_res.get("best_checkpoint")
-                orig_params = raw_res.get("original_params", 0)
+                orig_params = raw_res.get("original_params", controller.baseline_params or 0)
                 final_params = raw_res.get("final_params", orig_params)
-                base_acc = raw_res.get("baseline_accuracy", 0.0)
+                base_acc = raw_res.get("baseline_accuracy", controller.baseline_accuracy or 0.0)
                 final_acc = raw_res.get("final_accuracy", base_acc)
 
             else:
@@ -364,6 +434,14 @@ class UnifiedOptimizer:
             "stopping_reason": raw_res.get("stopping_reason"),
         }
 
+        if dataset:
+            results_data["dataset"] = {
+                "source": dataset,
+                "format": plan.dataset_format,
+                "task_type": plan.dataset_task_type,
+                "scorer": plan.dataset_scorer,
+            }
+
         results_json_path = os.path.join(run_dir, "results.json")
         with open(results_json_path, "w", encoding="utf-8") as f:
             json.dump(results_data, f, indent=2)
@@ -384,6 +462,8 @@ class UnifiedOptimizer:
             "resolved_config_path": resolved_cfg_file,
             "results": results_data,
         }
+        if dataset:
+            manifest_data["dataset"] = results_data["dataset"]
         manifest_json_path = os.path.join(run_dir, "manifest.json")
         with open(manifest_json_path, "w", encoding="utf-8") as f:
             json.dump(manifest_data, f, indent=2)
@@ -448,7 +528,11 @@ class UnifiedOptimizer:
 
             table.add_row("Run ID", run_id)
             table.add_row("Model", model)
-            table.add_row("Benchmark", benchmark.upper())
+            if dataset:
+                table.add_row("Evaluation Dataset", f"{dataset} ({plan.dataset_format})")
+                table.add_row("Task & Scorer", f"{plan.dataset_task_type} | {plan.dataset_scorer}")
+            else:
+                table.add_row("Benchmark", benchmark.upper())
             table.add_row("Strategy Used", resolved_strat.value.upper())
             table.add_row("Original Parameters", f"{int(orig_params):,} ({orig_params/1e6:.1f}M)")
             table.add_row("Optimized Parameters", f"{int(final_params):,} ({final_params/1e6:.1f}M)")

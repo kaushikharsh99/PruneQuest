@@ -144,7 +144,7 @@ class JointIncrementalOptimizer:
     def run_baseline(self) -> Dict[str, Any]:
         """Establishes unpruned baseline for loss and GSM8K reasoning accuracy."""
         existing = self.tracker.get_baseline()
-        if existing:
+        if existing and existing.get("screening_loss", 0.0) > 0.0:
             self.baseline_accuracy = existing["accuracy"]
             self.baseline_loss = existing.get("screening_loss", 0.0)
             self.baseline_params = existing.get("params_after", self.baseline_params)
@@ -189,6 +189,19 @@ class JointIncrementalOptimizer:
         }
         self.tracker.log_trial(record)
         return record
+
+    def _get_screening_loss_threshold(self) -> float:
+        """Computes loss threshold based on positive baseline loss, factor, and margin."""
+        if self.baseline_loss <= 0.0 and self.screening_samples and self.model is not None:
+            dev = self.config.model.device
+            screen_res = ProxyScreeningEvaluator.evaluate_loss(
+                self.model, self.tokenizer, self.screening_samples, device=dev,
+                max_length=self.config.calibration.max_length,
+            )
+            self.baseline_loss = screen_res.loss
+        factor = self.config.pruning.screening_loss_factor
+        margin = self.config.pruning.screening_loss_margin
+        return (self.baseline_loss * factor) + margin
 
     def _refresh_profiles(self):
         """Level 1: Computes or refreshes cached Block Influence and FLAP profiles."""
@@ -346,6 +359,38 @@ class JointIncrementalOptimizer:
         iteration = 0
         parent_id = "baseline"
 
+        # Ensure unpruned baseline (loss and accuracy) is established
+        if not self.tracker.get_baseline():
+            if self.baseline_loss > 0.0 and self.baseline_accuracy > 0.0:
+                record = {
+                    "trial_id": "baseline",
+                    "iteration": 0,
+                    "action_type": "baseline",
+                    "parent_id": "none",
+                    "params_before": self.baseline_params,
+                    "params_after": self.baseline_params,
+                    "params_removed": 0,
+                    "param_retention_pct": 100.0,
+                    "screening_loss": self.baseline_loss,
+                    "accuracy": self.baseline_accuracy,
+                    "accuracy_retention_pct": 100.0,
+                    "status": "accepted",
+                    "rejection_reason": "",
+                    "checkpoint_path": "unpruned_baseline",
+                    "elapsed_time_sec": 0.0,
+                }
+                self.tracker.log_trial(record)
+            else:
+                self.run_baseline()
+        elif self.baseline_loss <= 0.0:
+            self.run_baseline()
+        else:
+            base_rec = self.tracker.get_baseline()
+            if base_rec:
+                self.baseline_accuracy = base_rec.get("accuracy", self.baseline_accuracy)
+                self.baseline_loss = base_rec.get("screening_loss", self.baseline_loss)
+                self.baseline_params = base_rec.get("params_after", self.baseline_params)
+
         if resume:
             latest = self.tracker.get_latest_accepted()
             if latest and latest.get("checkpoint_path") and latest.get("checkpoint_path") != "unpruned_baseline":
@@ -484,7 +529,7 @@ class JointIncrementalOptimizer:
                     self.model, self.tokenizer, self.screening_samples, device=dev,
                     max_length=self.config.calibration.max_length,
                 )
-                loss_thresh = (self.baseline_loss * self.config.pruning.screening_loss_factor) + self.config.pruning.screening_loss_margin
+                loss_thresh = self._get_screening_loss_threshold()
                 joint_cand.predicted_loss = max(screen_res.loss - self.baseline_loss, 0.0)
 
                 if screen_res.loss <= loss_thresh:
@@ -654,7 +699,7 @@ class JointIncrementalOptimizer:
                         self.model, self.tokenizer, self.screening_samples, device=dev,
                         max_length=self.config.calibration.max_length,
                     )
-                    loss_thresh = (self.baseline_loss * self.config.pruning.screening_loss_factor) + self.config.pruning.screening_loss_margin
+                    loss_thresh = self._get_screening_loss_threshold()
 
                     if alt_screen.loss > loss_thresh:
                         console.print(f"      [red]✘ Rejected by Screening:[/red] Loss {alt_screen.loss:.4f} > threshold {loss_thresh:.4f}")

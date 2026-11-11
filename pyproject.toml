@@ -50,6 +50,11 @@ dev = [
 eval = [
     "lm-eval>=0.4.0",
 ]
+studio = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "sse-starlette>=1.6.0",
+]
 
 [project.scripts]
 prunequest = "prunequest.cli:app"
@@ -62,6 +67,10 @@ Issues = "https://github.com/kaushikharsh99/PruneQuest/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.json", "*.md"]
+prunequest = ["studio/static/**", "studio/static/**/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -37,9 +37,9 @@ class DatasetConfig(BaseModel):
     fields: DatasetFields = Field(default_factory=DatasetFields)
     split_mapping: Dict[str, str] = Field(default_factory=lambda: {
         "calibration": "train",
-        "smoke": "test",
-        "screening": "test",
-        "dev": "test",
+        "screening": "train",
+        "dev": "validation",
+        "smoke": "validation",
         "final_test": "test",
     })
 
@@ -94,6 +94,23 @@ class NativeBenchmark(BaseBenchmark):
         self.spec = spec
         self._loaded_samples: Optional[Dict[str, List[BenchmarkSample]]] = None
 
+    def _extract_row_record(self, row: Dict[str, Any], idx: int, input_col: str, target_col: str) -> Dict[str, str]:
+        if input_col not in row:
+            raise BenchmarkError(
+                f"Required input field '{input_col}' missing in dataset row {idx}. Available fields: {list(row.keys())}"
+            )
+        if target_col not in row:
+            raise BenchmarkError(
+                f"Required target field '{target_col}' missing in dataset row {idx}. Available fields: {list(row.keys())}"
+            )
+        val_in = str(row[input_col]).strip() if row[input_col] is not None else ""
+        val_tgt = str(row[target_col]).strip() if row[target_col] is not None else ""
+        if not val_in:
+            raise BenchmarkError(f"Dataset row {idx} has empty input field '{input_col}'. Malformed samples cannot be used.")
+        if not val_tgt:
+            raise BenchmarkError(f"Dataset row {idx} has empty target field '{target_col}'. Malformed samples cannot be used.")
+        return {"id": str(idx), "input": val_in, "target": val_tgt}
+
     def load_data(
         self,
         calibration_size: int = 256,
@@ -109,48 +126,86 @@ class NativeBenchmark(BaseBenchmark):
         input_col = self.spec.dataset.fields.input
         target_col = self.spec.dataset.fields.target
 
-        raw_records = []
         if source == "huggingface":
             from datasets import load_dataset
             try:
-                ds = load_dataset(path)
-                # Take first split or test
-                split_key = "test" if "test" in ds else list(ds.keys())[0]
-                for idx, row in enumerate(ds[split_key]):
-                    raw_records.append({
-                        "id": str(idx),
-                        "input": str(row.get(input_col, "")),
-                        "target": str(row.get(target_col, "")),
-                    })
+                ds = load_dataset(path, revision=self.spec.dataset.revision)
             except Exception as e:
                 raise BenchmarkError(f"Failed to load Hugging Face dataset '{path}': {e}") from e
+
+            # Multi-split dataset handling
+            if hasattr(ds, "keys") and callable(ds.keys):
+                available_splits = list(ds.keys())
+                mapping = self.spec.dataset.split_mapping
+
+                def resolve_split(role: str, candidates: List[str]) -> Optional[str]:
+                    target = mapping.get(role)
+                    if target and target in available_splits:
+                        return target
+                    for c in candidates:
+                        if c in available_splits:
+                            return c
+                    return None
+
+                train_sp = resolve_split("calibration", ["train", "training"])
+                val_sp = resolve_split("dev", ["validation", "valid", "val", "dev"])
+                test_sp = resolve_split("final_test", ["test", "testing", "eval"])
+
+                if train_sp and val_sp:
+                    train_records = [self._extract_row_record(r, i, input_col, target_col) for i, r in enumerate(ds[train_sp])]
+                    val_records = [self._extract_row_record(r, i, input_col, target_col) for i, r in enumerate(ds[val_sp])]
+                    test_records = [self._extract_row_record(r, i, input_col, target_col) for i, r in enumerate(ds[test_sp])] if test_sp else []
+
+                    total_train = len(train_records)
+                    min_train_needed = calibration_size + screening_size
+                    if total_train < min_train_needed:
+                        raise BenchmarkError(
+                            f"Insufficient samples in training split '{train_sp}' ({total_train}) for disjoint "
+                            f"calibration ({calibration_size}) + screening ({screening_size}) partitions."
+                        )
+
+                    calib_samples = [BenchmarkSample(id=f"train_{r['id']}", question=r["input"], gold_answer=r["target"]) for r in train_records[:calibration_size]]
+                    screen_samples = [BenchmarkSample(id=f"train_{r['id']}", question=r["input"], gold_answer=r["target"]) for r in train_records[calibration_size:min_train_needed]]
+
+                    dev_len = min(len(val_records), dev_size)
+                    if dev_len == 0:
+                        raise BenchmarkError(f"Validation split '{val_sp}' is empty.")
+                    dev_samples = [BenchmarkSample(id=f"val_{r['id']}", question=r["input"], gold_answer=r["target"]) for r in val_records[:dev_len]]
+                    smoke_samples = dev_samples[:min(dev_len, smoke_size)]
+                    test_samples = [BenchmarkSample(id=f"test_{r['id']}", question=r["input"], gold_answer=r["target"]) for r in test_records]
+
+                    self._loaded_samples = {
+                        "calibration": calib_samples,
+                        "screening": screen_samples,
+                        "dev": dev_samples,
+                        "smoke": smoke_samples,
+                        "test": test_samples,
+                        "full": calib_samples + screen_samples + dev_samples,
+                    }
+                    return self._loaded_samples
+
+                # Single split in DatasetDict
+                single_sp = train_sp or val_sp or available_splits[0]
+                raw_records = [self._extract_row_record(r, i, input_col, target_col) for i, r in enumerate(ds[single_sp])]
+            else:
+                raw_records = [self._extract_row_record(r, i, input_col, target_col) for i, r in enumerate(ds)]
         elif source in ("json", "jsonl"):
+            raw_records = []
             with open(path, "r", encoding="utf-8") as f:
                 if source == "jsonl" or path.endswith(".jsonl"):
                     for idx, line in enumerate(f):
                         if line.strip():
                             r = json.loads(line)
-                            raw_records.append({
-                                "id": str(idx),
-                                "input": str(r.get(input_col, "")),
-                                "target": str(r.get(target_col, "")),
-                            })
+                            raw_records.append(self._extract_row_record(r, idx, input_col, target_col))
                 else:
                     data = json.load(f)
                     for idx, r in enumerate(data):
-                        raw_records.append({
-                            "id": str(idx),
-                            "input": str(r.get(input_col, "")),
-                            "target": str(r.get(target_col, "")),
-                        })
+                        raw_records.append(self._extract_row_record(r, idx, input_col, target_col))
         elif source in ("csv", "parquet"):
             df = pd.read_csv(path) if source == "csv" else pd.read_parquet(path)
+            raw_records = []
             for idx, r in df.iterrows():
-                raw_records.append({
-                    "id": str(idx),
-                    "input": str(r.get(input_col, "")),
-                    "target": str(r.get(target_col, "")),
-                })
+                raw_records.append(self._extract_row_record(r.to_dict(), idx, input_col, target_col))
         else:
             raise BenchmarkError(f"Unsupported dataset source '{source}'")
 
@@ -159,18 +214,29 @@ class NativeBenchmark(BaseBenchmark):
             for r in raw_records
         ]
 
-        # Disjoint deterministic slicing to prevent data contamination between calibration and evaluation
+        # Disjoint deterministic slicing to strictly prevent data leakage between calibration and evaluation
         total_len = len(samples)
-        calib_end = min(total_len, calibration_size)
-        screen_end = min(total_len, calib_end + screening_size)
-        dev_end = min(total_len, screen_end + dev_size)
+        needed = calibration_size + screening_size + dev_size
+        if total_len < needed:
+            raise BenchmarkError(
+                f"Insufficient data in dataset for disjoint partitions: available={total_len}, "
+                f"required={needed} (calibration={calibration_size} + screening={screening_size} + dev={dev_size}). "
+                f"Data leakage between calibration and development is strictly prevented."
+            )
+
+        calib_end = calibration_size
+        screen_end = calib_end + screening_size
+        dev_end = screen_end + dev_size
+
+        dev_samples = samples[screen_end:dev_end]
+        smoke_samples = dev_samples[:min(len(dev_samples), smoke_size)]
 
         self._loaded_samples = {
             "calibration": samples[:calib_end],
             "screening": samples[calib_end:screen_end],
-            "dev": samples[screen_end:dev_end] if screen_end < total_len else samples[:min(total_len, dev_size)],
-            "smoke": samples[:min(total_len, smoke_size)],
-            "test": samples[dev_end:] if dev_end < total_len else [],
+            "dev": dev_samples,
+            "smoke": smoke_samples,
+            "test": samples[dev_end:],
             "full": samples,
         }
         return self._loaded_samples
@@ -184,7 +250,13 @@ class NativeBenchmark(BaseBenchmark):
         device: str = "cuda:0",
     ) -> EvaluationResult:
         data = self.load_data()
-        samples = data.get(split_name, data["smoke"])
+        if split_name not in data or not data[split_name]:
+            available = [k for k, v in data.items() if v]
+            raise BenchmarkError(
+                f"Requested evaluation split '{split_name}' is not available or empty in dataset '{self.spec.name}'. "
+                f"Available populated splits: {available}. Please specify a valid split."
+            )
+        samples = data[split_name]
         if max_samples:
             samples = samples[:max_samples]
 
@@ -262,13 +334,28 @@ class NativeBenchmark(BaseBenchmark):
                 except ValueError:
                     return False
             return False
-        elif metric == "math_verify" and MATH_VERIFY_AVAILABLE:
+        elif metric == "math_verify":
+            if not MATH_VERIFY_AVAILABLE:
+                raise BenchmarkError(
+                    "Scorer 'math_verify' requires the 'math_verify' library, which is not installed. "
+                    "Install it via 'pip install math-verify' or specify an alternative metric with --metric (e.g., numeric_exact_match, exact_match)."
+                )
             try:
                 pred_p = parse(prediction)
                 gold_p = parse(gold)
-                return verify(gold_p, pred_p)
+                return bool(verify(gold_p, pred_p))
             except Exception:
-                return self._score(prediction, gold)
+                return False
+        elif metric == "multiple_choice":
+            pred_c = prediction.strip().upper()
+            gold_c = gold.strip().upper()
+            if pred_c == gold_c:
+                return True
+            if len(gold_c) == 1 and gold_c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                matches = re.findall(r"\b([A-Z])\b", pred_c)
+                if matches and matches[-1] == gold_c:
+                    return True
+            return False
         elif metric == "regex" and self.spec.scoring.regex_pattern:
             m = re.search(self.spec.scoring.regex_pattern, prediction)
             if m:

@@ -39,6 +39,17 @@ class EventCategory:
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
 
+    # Dataset onboarding events (UX Release C)
+    DATASET_INSPECTION_STARTED = "dataset_inspection_started"
+    DATASET_INSPECTION_COMPLETED = "dataset_inspection_completed"
+    FIELD_MAPPING_RESOLVED = "field_mapping_resolved"
+    TASK_TYPE_RESOLVED = "task_type_resolved"
+    SCORER_RESOLVED = "scorer_resolved"
+    DATASET_PARTITIONING_STARTED = "dataset_partitioning_started"
+    DATASET_PARTITIONING_COMPLETED = "dataset_partitioning_completed"
+    BENCHMARK_VALIDATION_COMPLETED = "benchmark_validation_completed"
+    DATASET_VALIDATION_FAILED = "dataset_validation_failed"
+
 
 class EventPhase:
     PREFLIGHT = "preflight"
