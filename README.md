@@ -4,7 +4,7 @@
 
 # PruneQuest: Universal Benchmark-Driven LLM Pruning Framework
 
-[![CI](https://github.com/kaushikharsh99/PruneQuest/actions/workflows/tests.yml/badge.svg)](https://github.com/kaushikharsh99/PruneQuest/actions)
+[![CI](https://github.com/kaushikharsh99/PruneQuest/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/kaushikharsh99/PruneQuest/actions/workflows/tests.yml?query=branch%3Amain)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.5+](https://img.shields.io/badge/PyTorch-2.5+-ee4c2c.svg)](https://pytorch.org/)
@@ -86,7 +86,80 @@ flowchart TD
 
 ---
 
-## Quickstart
+---
+
+## Quickstart: One-Command Pruning
+
+Compress any supported Hugging Face model with zero YAML configuration. PruneQuest automatically diagnoses your hardware, inspects model architecture, selects the optimal pruning strategy, establishes the unpruned baseline, searches for the smallest viable model, and verifies the final checkpoint:
+
+```bash
+# 1. Optimize with default settings (balanced preset, auto strategy, 99% accuracy retention)
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct
+
+# 2. Specify benchmark and retention target (e.g. 98% accuracy retention on GSM8K)
+prunequest optimize meta-llama/Llama-3.2-1B-Instruct --benchmark gsm8k --retain 0.98
+
+# 3. Choose a budget preset: quick (fast check), balanced (recommended), thorough (deep search)
+prunequest optimize Qwen/Qwen2.5-Math-1.5B-Instruct --preset quick
+
+# 4. Dry-run preflight inspection without downloading weights
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --dry-run
+
+# 5. Output pure machine-readable JSON summary or stream real-time events
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json-events
+
+# 6. Resume an interrupted optimization run safely
+prunequest resume runs/qwen2_5_0_5b_instruct_20261111_120000
+```
+
+### Experiment & Run Management
+
+Easily discover, inspect, compare, and view structured event logs for previous optimization experiments without loading model weights:
+
+```bash
+# List all experiments (supports sorting by newest, oldest, compression, retention)
+prunequest runs list --sort newest
+prunequest runs list --status completed --model qwen --json
+
+# Inspect detailed run provenance and metrics
+prunequest runs show qwen2_5_0_5b_instruct_20261111_120000
+
+# Compare two experiments and check evaluation consistency
+prunequest runs compare run_alpha run_beta
+
+# View structured event logs filtered by phase or category
+prunequest runs logs run_alpha --phase validation
+prunequest runs logs run_alpha --category candidate_accepted --json
+
+# Regenerate Markdown summaries, CSV history, and Pareto plots offline
+prunequest report runs/qwen2_5_0_5b_instruct_20261111_120000
+```
+
+### Standardized Run Directory (Schema v2)
+
+Every optimization run generates a standardized, self-contained directory:
+
+```text
+runs/qwen2_5_0_5b_instruct_20261111_120000/
+├── best/                  # Standalone Hugging Face safetensors checkpoint (directly loadable)
+│   ├── config.json
+│   ├── model.safetensors
+│   └── tokenizer.json
+├── manifest.json          # Schema v2: Complete provenance, versions, parameters, and verification status
+├── results.json           # Machine-readable performance metrics
+├── events.jsonl           # Sequential, structured optimization event logs
+├── resolved_config.yaml   # Fully resolved configuration for 100% deterministic reproduction
+└── reports/
+    ├── summary.md         # Executive overview and verified loading snippet
+    ├── detailed_report.md # Technical audit report with candidate decisions
+    ├── history.csv        # Comprehensive candidate iteration history
+    └── plots/             # Accuracy vs. parameters and non-dominated Pareto frontier
+```
+
+---
+
+## Detailed Step-by-Step Guide
 
 ### 1. Installation
 
@@ -137,46 +210,12 @@ prunequest benchmarks search gsm8k
 prunequest benchmarks info gsm8k
 ```
 
-### 5. Launch Pruning Search
+### 5. Advanced Pruning Workflows
 
-#### FLAP-Based: Structured Width / MLP Channel Pruning
-Fluctuation-based Adaptive Structured Pruning on SwiGLU MLP intermediate projections with automatic step-back halving ($5\% \to 2.5\% \to 1.25\% \to 0.6125\%$) and VRAM-aware batched evaluation (up to batch size 64):
-```bash
-# 1. Profile FLAP layer importance scores
-prunequest flap profile --config configs/qwen_math_flap.yaml
-
-# 2. Run incremental width pruning optimization
-prunequest flap-based optimize --config configs/qwen_math_flap.yaml --batch-size 32
-
-# 3. Resume interrupted search from last accepted checkpoint
-prunequest flap resume --config configs/qwen_math_flap.yaml
-
-# 4. Evaluate exported checkpoint on GSM8K
-prunequest flap test --checkpoint runs/qwen_math_flap/best --split test
-```
-
-#### Block-Based: Structured Depth / Layer Pruning
-Autonomous search controller pruning redundant transformer blocks based on Block Influence hidden state cosine distance:
-```bash
-# Multi-benchmark pruning search with 99% retention target (dev split, or smoke for healthchecks)
-prunequest block-based run \
-    --model Qwen/Qwen2.5-Math-1.5B-Instruct \
-    --benchmark gsm8k \
-    --retain 0.99 \
-    --max-iterations 3 \
-    --split dev \
-    --output ./runs/qwen_block_run
-
-# Or inspect model layer rankings using the 'block' alias
-prunequest block inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
-```
+For power users requiring granular control over algorithmic parameters, PruneQuest provides direct commands:
 
 #### Full Sweep / Full Pass Pruning (JIPO)
-Joint Incremental Pruning Optimizer (JIPO) dynamically unifies structured depth (Block Influence layer excision) and width (FLAP MLP intermediate channel slicing) pruning into a progressive 3-level search:
-- **Level 1 (Cheap Importance Profiling)**: Calculates Block Influence scores and FLAP channel statistics using calibration forward passes without generating answers; profiles are cached and selectively invalidated on structural modifications.
-- **Level 2 (Cheap Combined Screening)**: Slices candidate channels and layer in-memory and screens teacher-forced loss on a small calibration-independent subset before invoking full benchmarks.
-- **Level 3 (Adaptive Multi-Benchmark Validation)**: Validates surviving joint candidates against full accuracy retention constraints. If the joint candidate passes, both operations are accepted and committed; if it fails, single-operation alternatives ($C_2 = M \setminus \{B\}$ and $C_3 = M \setminus \{F\}$) are evaluated based on utility score $U(C) = \frac{\Delta\text{Bytes}}{\epsilon + \text{Loss}}$.
-- **Pareto Tracking & SQLite Persistence**: Tracks the multi-dimensional Pareto frontier of accuracy vs. parameter reduction, logs evaluations saved, and automatically exports the dominant checkpoint.
+Joint Incremental Pruning Optimizer (JIPO) dynamically unifies structured depth (Block Influence layer excision) and width (FLAP MLP intermediate channel slicing) pruning into a progressive multi-fidelity search:
 
 ```bash
 # Execute Joint Incremental Pruning Optimizer
@@ -194,7 +233,69 @@ prunequest full-pass \
   --resume
 ```
 
-### 6. Python API Example
+#### FLAP-Based: Structured Width / MLP Channel Pruning
+Fluctuation-based Adaptive Structured Pruning on SwiGLU MLP intermediate projections with automatic step-back halving ($5\% \to 2.5\% \to 1.25\% \to 0.6125\%$) and VRAM-aware batched evaluation:
+```bash
+# Profile FLAP layer importance scores
+prunequest flap profile --config configs/qwen_math_flap.yaml
+
+# Run incremental width pruning optimization
+prunequest flap-based optimize --config configs/qwen_math_flap.yaml --batch-size 32
+
+# Resume interrupted search from last accepted checkpoint
+prunequest flap resume --config configs/qwen_math_flap.yaml
+
+# Evaluate exported checkpoint on GSM8K
+prunequest flap test --checkpoint runs/qwen_math_flap/best --split test
+```
+
+#### Block-Based: Structured Depth / Layer Pruning
+Autonomous search controller pruning redundant transformer blocks based on Block Influence hidden state cosine distance:
+```bash
+prunequest block-based run \
+    --model Qwen/Qwen2.5-Math-1.5B-Instruct \
+    --benchmark gsm8k \
+    --retain 0.99 \
+    --max-iterations 3 \
+    --split dev \
+    --output ./runs/qwen_block_run
+
+# Or inspect model layer rankings using the 'block' alias
+prunequest block inspect --model Qwen/Qwen2.5-Math-1.5B-Instruct
+```
+
+---
+
+## Python API
+
+### High-Level One-Command Optimization
+
+```python
+from prunequest import optimize
+
+# Optional live event subscriber
+def on_progress(event):
+    print(f"[{event.phase}] {event.event_type}: {event.payload}")
+
+# Automatically plans, executes, validates, and exports the optimized model
+result = optimize(
+    model="Qwen/Qwen2.5-0.5B-Instruct",
+    benchmark="gsm8k",
+    retain=0.99,
+    preset="balanced",
+    on_progress=on_progress,
+)
+
+print(f"Status: {result.status}")
+print(f"Parameters pruned: {result.params_pruned:,} ({result.original_params:,} -> {result.final_params:,})")
+print(f"Accuracy: {result.final_accuracy*100:.2f}% (Baseline: {result.baseline_accuracy*100:.2f}%)")
+print(f"Retention: {result.accuracy_retention*100:.2f}%")
+print(f"Verified Checkpoint: {result.best_checkpoint}")
+```
+
+### Object-Oriented Framework API
+
+For custom integrations and pipeline controllers:
 
 ```python
 from prunequest import PruneQuest

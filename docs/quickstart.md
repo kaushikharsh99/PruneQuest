@@ -73,7 +73,80 @@ prunequest benchmarks validate --spec configs/default.yaml
 
 ---
 
-## 5. 5-Minute Quickstart: Pipeline Smoke Test
+## 5. One-Command Optimization (`prunequest optimize`)
+
+The recommended way to prune any model is using `prunequest optimize`. You do not need to understand FLAP, Block Influence, JIPO, calibration, or manual YAML configurations:
+
+```bash
+# 1. Default optimization (balanced preset, auto strategy, 99% retention on GSM8K)
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct
+
+# 2. Specify target retention and benchmark
+prunequest optimize meta-llama/Llama-3.2-1B-Instruct --benchmark gsm8k --retain 0.98
+
+# 3. Choose a budget preset: quick (diagnostic check), balanced (recommended), thorough (maximum search depth)
+prunequest optimize Qwen/Qwen2.5-Math-1.5B-Instruct --preset quick
+
+# 4. Dry-run preflight inspection without downloading weights
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --dry-run
+
+# 5. Output pure machine-readable JSON summary or stream events
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --json-events
+
+# 6. Disable interactive live dashboard for plain log output
+prunequest optimize Qwen/Qwen2.5-0.5B-Instruct --no-progress
+```
+
+### Standardized Run Artifacts (Schema v2)
+
+Every `prunequest optimize` execution produces:
+
+```text
+runs/qwen2_5_0_5b_instruct_20261111_120000/
+├── best/                  # Standalone Hugging Face safetensors checkpoint (directly loadable)
+│   ├── config.json
+│   ├── model.safetensors
+│   └── tokenizer.json
+├── manifest.json          # Schema v2: Complete provenance, versions, parameters, and verification status
+├── results.json           # Machine-readable performance metrics
+├── events.jsonl           # Sequential, structured optimization event logs
+├── resolved_config.yaml   # Fully resolved configuration for 100% deterministic reproduction
+└── reports/
+    ├── summary.md         # Executive overview and verified loading snippet
+    ├── detailed_report.md # Technical audit report with candidate decisions
+    ├── history.csv        # Comprehensive candidate iteration history
+    └── plots/             # Accuracy vs. parameters and non-dominated Pareto frontier
+```
+
+---
+
+## 6. Experiment Management (`prunequest runs`)
+
+PruneQuest provides commands to discover, inspect, compare, and view logs of prior optimization experiments without loading model weights:
+
+```bash
+# List experiments with filtering and sorting
+prunequest runs list --sort newest
+prunequest runs list --status completed --model qwen --limit 10
+
+# Inspect complete run provenance and parameters
+prunequest runs show qwen2_5_0_5b_instruct_20261111_120000
+
+# Compare two runs and verify evaluation consistency
+prunequest runs compare run_alpha run_beta
+
+# View structured event logs
+prunequest runs logs run_alpha --phase validation
+prunequest runs logs run_alpha --category candidate_accepted
+
+# Regenerate reports and Pareto plots offline
+prunequest report runs/qwen2_5_0_5b_instruct_20261111_120000
+```
+
+---
+
+## 6. 5-Minute Quickstart: Pipeline Smoke Test
 
 To verify that the entire pipeline (scoring, candidate proposal, screening, checkpoint export, and subprocess reload validation) functions on your system, execute a lightweight 1-iteration smoke check:
 
@@ -91,9 +164,9 @@ prunequest block-based run \
 
 ---
 
-## 6. Production Workflows
+## 7. Production Workflows
 
-For production-grade compression, PruneQuest provides three distinct workflows evaluated across full development partitions:
+For power users requiring granular control over algorithmic parameters, PruneQuest provides direct commands:
 
 ### Workflow A: Block Influence (Structured Depth / Layer Pruning)
 Greedy layer excision ranking transformer blocks by token-level cosine distances:
@@ -141,15 +214,15 @@ prunequest full-pass \
 
 ---
 
-## 7. Resuming Interrupted Runs
+## 8. Resuming Interrupted Runs
 
-PruneQuest saves experiment state transactionally. If an experiment is interrupted:
+PruneQuest saves experiment state transactionally. If an experiment is interrupted, resume it with:
 
 ```bash
-# Resume Block Influence run
-prunequest resume ./runs/qwen_block_run
+# One-command resume for any run directory
+prunequest resume ./runs/qwen2_5_0_5b_instruct_20261111_120000
 
-# Resume FLAP run
+# Or strategy-specific resume
 prunequest flap resume --run-dir ./runs/qwen_math_flap
 ```
 
@@ -157,7 +230,7 @@ Resume validates baseline scores, model architecture, and checkpoint integrity b
 
 ---
 
-## 8. Checkpoint Export & Independent Validation
+## 9. Checkpoint Export & Independent Validation
 
 Export accepted checkpoints to Hugging Face `safetensors` format with out-of-process reload validation:
 
@@ -169,9 +242,33 @@ The subprocess validator ensures `config.json`, tokenizer, finite weights (no Na
 
 ---
 
-## 9. Python API Usage
+## 10. Python API Usage
 
-PruneQuest can be used directly as a Python library:
+### High-Level One-Command Optimization
+
+```python
+from prunequest import optimize
+
+# Optional live event subscriber
+def on_progress(event):
+    print(f"[{event.phase}] {event.event_type}: {event.payload}")
+
+# Automatically plans, executes, validates, and exports the optimized model
+result = optimize(
+    model="Qwen/Qwen2.5-0.5B-Instruct",
+    benchmark="gsm8k",
+    retain=0.99,
+    preset="balanced",
+    on_progress=on_progress,
+)
+
+print(f"Status: {result.status}")
+print(f"Parameters pruned: {result.params_pruned:,}")
+print(f"Accuracy: {result.final_accuracy*100:.2f}% (Baseline: {result.baseline_accuracy*100:.2f}%)")
+print(f"Verified Checkpoint: {result.best_checkpoint}")
+```
+
+### Framework API
 
 ```python
 from prunequest import PruneQuest

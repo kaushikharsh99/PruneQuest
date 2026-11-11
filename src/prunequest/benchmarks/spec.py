@@ -159,12 +159,18 @@ class NativeBenchmark(BaseBenchmark):
             for r in raw_records
         ]
 
-        # Deterministic slicing
+        # Disjoint deterministic slicing to prevent data contamination between calibration and evaluation
+        total_len = len(samples)
+        calib_end = min(total_len, calibration_size)
+        screen_end = min(total_len, calib_end + screening_size)
+        dev_end = min(total_len, screen_end + dev_size)
+
         self._loaded_samples = {
-            "calibration": samples[:calibration_size],
-            "smoke": samples[:smoke_size],
-            "screening": samples[:screening_size],
-            "dev": samples[:dev_size],
+            "calibration": samples[:calib_end],
+            "screening": samples[calib_end:screen_end],
+            "dev": samples[screen_end:dev_end] if screen_end < total_len else samples[:min(total_len, dev_size)],
+            "smoke": samples[:min(total_len, smoke_size)],
+            "test": samples[dev_end:] if dev_end < total_len else [],
             "full": samples,
         }
         return self._loaded_samples

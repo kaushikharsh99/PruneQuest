@@ -37,6 +37,9 @@ from prunequest.reporting.reports import ReportGenerator
 from prunequest.core.tracking import ExperimentTracker
 from prunequest.export.validation import SubprocessValidator
 from prunequest.reporting.metrics import clean_gpu_memory
+from prunequest.orchestrator.optimizer import UnifiedOptimizer
+from prunequest.runs import RunManager
+from prunequest.reporting import UnifiedReportGenerator
 
 from prunequest.flap.cli import app as flap_app
 
@@ -56,6 +59,9 @@ app.add_typer(block_app, name="block", help="Alias for block-based pruning.")
 
 benchmarks_app = typer.Typer(help="Discover, inspect, and validate benchmarks.")
 app.add_typer(benchmarks_app, name="benchmarks")
+
+runs_app = typer.Typer(help="Manage, inspect, compare, and view logs of optimization runs.")
+app.add_typer(runs_app, name="runs")
 
 console = Console()
 
@@ -448,10 +454,251 @@ def run(
     console.print(summary_table)
 
 
+@app.command(name="optimize")
+def optimize_cmd(
+    model: str = typer.Argument(..., help="Hugging Face model ID or local directory to optimize"),
+    benchmark: str = typer.Option("gsm8k", "--benchmark", "-b", help="Benchmark guiding pruning (e.g. gsm8k, arc_easy)"),
+    retain: float = typer.Option(0.99, "--retain", "-r", help="Target minimum accuracy retention (e.g. 0.99 for 99%)"),
+    preset: str = typer.Option("balanced", "--preset", "-p", help="Optimization budget preset: quick | balanced | thorough"),
+    strategy: str = typer.Option("auto", "--strategy", "-s", help="Pruning strategy: auto | joint | flap | block"),
+    device: str = typer.Option("auto", "--device", "-d", help="Hardware device: auto | cuda:0 | cpu | mps"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Custom run output directory"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run preflight inspection only without downloading or loading weights"),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume interrupted optimization if run directory exists"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Optional YAML config path to override settings"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size", help="Batch size override for evaluation"),
+    max_iterations: Optional[int] = typer.Option(None, "--max-iterations", help="Maximum search iterations override"),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable interactive live dashboard and use plain text output"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON summary on completion"),
+    json_events: bool = typer.Option(False, "--json-events", help="Stream structured JSON Lines events in real time"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Minimal console output"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose console output"),
+    debug: bool = typer.Option(False, "--debug", help="Enable debug logging"),
+):
+    """
+    Autonomous one-command LLM pruning.
+    Finds the smallest verified model satisfying your retention threshold.
+    """
+    import logging
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
+    elif verbose:
+        logging.basicConfig(level=logging.INFO)
+
+    cmd_console = Console(quiet=quiet or json_output)
+    try:
+        res = UnifiedOptimizer.optimize(
+            model=model,
+            benchmark=benchmark,
+            retain=retain,
+            preset=preset,
+            strategy=strategy,
+            device=device,
+            output=output,
+            config=config,
+            dry_run=dry_run,
+            resume=resume,
+            batch_size=batch_size,
+            max_iterations=max_iterations,
+            no_progress=no_progress,
+            json_output=json_output,
+            json_events=json_events,
+            console=cmd_console,
+        )
+        if res.status == "failed":
+            raise typer.Exit(1)
+    except Exception as e:
+        if debug:
+            raise
+        if not json_output:
+            cmd_console.print(f"[bold red]Optimization failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
+
+@runs_app.command(name="list")
+def runs_list(
+    limit: Optional[int] = typer.Option(20, "--limit", "-l", help="Maximum number of runs to display"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status (completed, interrupted, running, failed)"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Filter by model name substring"),
+    sort: str = typer.Option("newest", "--sort", help="Sort order: newest | oldest | compression | retention"),
+    json_output: bool = typer.Option(False, "--json", help="Output runs as machine-readable JSON"),
+    runs_dir: str = typer.Option("runs", "--runs-dir", help="Root directory containing experiment runs"),
+):
+    """List prior optimization experiments without loading model weights."""
+    import json
+    runs = RunManager.list_runs(runs_root=runs_dir, limit=limit, status=status, model=model, sort=sort)
+    if json_output:
+        print(json.dumps([r.to_dict() for r in runs], indent=2))
+        return
+
+    if not runs:
+        console.print(f"[yellow]No runs found in '{runs_dir}' matching criteria.[/yellow]")
+        return
+
+    table = Table(title="[bold green]PruneQuest Experiments[/bold green]")
+    table.add_column("Run ID", style="cyan", no_wrap=True)
+    table.add_column("Model", style="white")
+    table.add_column("Strategy", style="yellow")
+    table.add_column("Benchmark", style="blue")
+    table.add_column("Compression", style="magenta")
+    table.add_column("Retention", style="green")
+    table.add_column("Status", style="bold")
+    table.add_column("Created", style="dim")
+
+    for r in runs:
+        status_color = "green" if r.status == "completed" else "yellow" if r.status == "interrupted" else "red" if r.status == "failed" else "cyan"
+        table.add_row(
+            r.run_id,
+            r.model_id.split("/")[-1],
+            r.strategy.upper(),
+            r.benchmark.upper(),
+            f"{r.compression_pct:.1f}%",
+            f"{r.accuracy_retention_pct:.1f}%",
+            f"[{status_color}]{r.status.upper()}[/{status_color}]",
+            r.created_at[:19].replace("T", " ") if r.created_at else "—",
+        )
+    console.print(table)
+
+
+@runs_app.command(name="show")
+def runs_show(
+    run_id: str = typer.Argument(..., help="Run ID or path to run directory"),
+    json_output: bool = typer.Option(False, "--json", help="Output run details as JSON"),
+    runs_dir: str = typer.Option("runs", "--runs-dir", help="Root directory containing experiment runs"),
+):
+    """Inspect detailed provenance and metrics for an optimization run without loading models."""
+    import json
+    try:
+        run = RunManager.get_run(run_id, runs_root=runs_dir)
+    except Exception as e:
+        console.print(f"[bold red]Failed to inspect run '{run_id}': {e}[/bold red]")
+        raise typer.Exit(1)
+
+    if json_output:
+        print(json.dumps(run.to_dict(), indent=2))
+        return
+
+    table = Table(title=f"[bold green]PruneQuest Run Details — {run.run_id}[/bold green]")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="magenta")
+
+    table.add_row("Run ID", run.run_id)
+    table.add_row("Model ID", run.model_id)
+    table.add_row("Benchmark", run.benchmark.upper())
+    table.add_row("Strategy", run.strategy.upper())
+    table.add_row("Preset", run.preset.upper())
+    table.add_row("Device", run.device)
+    table.add_row("Status", run.status.upper())
+    table.add_row("Resumable", str(run.resumable))
+    table.add_row("Target Retention", f"{run.retention_target_pct:.1f}%")
+    table.add_row("Original Parameters", f"{run.original_parameters:,}")
+    table.add_row("Final Parameters", f"{run.final_parameters:,}")
+    table.add_row("Parameters Pruned", f"{run.parameters_pruned:,} ({run.compression_pct:.2f}%)")
+    table.add_row("Baseline Accuracy", f"{run.baseline_accuracy*100:.2f}%")
+    table.add_row("Final Accuracy", f"{run.final_accuracy*100:.2f}%")
+    table.add_row("Accuracy Retention", f"{run.accuracy_retention_pct:.2f}%")
+    table.add_row("Reload Verified", "[bold green]PASSED[/bold green]" if run.reload_verified else "[yellow]NOT VERIFIED[/yellow]")
+    table.add_row("Best Checkpoint", run.best_checkpoint or "None accepted")
+    table.add_row("Created At", run.created_at)
+    table.add_row("Elapsed Time", f"{run.elapsed_time_sec:.1f}s")
+    table.add_row("Run Directory", run.run_dir)
+
+    console.print(table)
+
+
+@runs_app.command(name="compare")
+def runs_compare(
+    run_a: str = typer.Argument(..., help="Run ID or path to first run"),
+    run_b: str = typer.Argument(..., help="Run ID or path to second run"),
+    json_output: bool = typer.Option(False, "--json", help="Output comparison as JSON"),
+    runs_dir: str = typer.Option("runs", "--runs-dir", help="Root directory containing experiment runs"),
+):
+    """Compare two optimization experiments and evaluate consistency."""
+    import json
+    try:
+        cmp = RunManager.compare_runs(run_a, run_b, runs_root=runs_dir)
+    except Exception as e:
+        console.print(f"[bold red]Failed to compare runs: {e}[/bold red]")
+        raise typer.Exit(1)
+
+    if json_output:
+        print(json.dumps(cmp.to_dict(), indent=2))
+        return
+
+    if not cmp.is_compatible:
+        for note in cmp.compatibility_notes:
+            console.print(f"[bold yellow]⚠ Warning:[/bold yellow] {note}")
+
+    table = Table(title="[bold green]PruneQuest Experiment Comparison[/bold green]")
+    table.add_column("Metric", style="cyan")
+    table.add_column(f"Run A: {cmp.run_a.run_id}", style="white")
+    table.add_column(f"Run B: {cmp.run_b.run_id}", style="white")
+    table.add_column("Difference (B vs A)", style="magenta")
+
+    table.add_row("Model", cmp.run_a.model_id.split("/")[-1], cmp.run_b.model_id.split("/")[-1], "—")
+    table.add_row("Strategy", cmp.run_a.strategy.upper(), cmp.run_b.strategy.upper(), "—")
+    table.add_row("Benchmark", cmp.run_a.benchmark.upper(), cmp.run_b.benchmark.upper(), "—")
+    table.add_row("Final Parameters", f"{cmp.run_a.final_parameters:,}", f"{cmp.run_b.final_parameters:,}", f"{cmp.param_reduction_diff:+,}")
+    table.add_row("Compression", f"{cmp.run_a.compression_pct:.2f}%", f"{cmp.run_b.compression_pct:.2f}%", f"{cmp.compression_diff_pct:+.2f}%")
+    table.add_row("Baseline Accuracy", f"{cmp.run_a.baseline_accuracy*100:.2f}%", f"{cmp.run_b.baseline_accuracy*100:.2f}%", f"{(cmp.run_b.baseline_accuracy - cmp.run_a.baseline_accuracy)*100:+.2f}%")
+    table.add_row("Final Accuracy", f"{cmp.run_a.final_accuracy*100:.2f}%", f"{cmp.run_b.final_accuracy*100:.2f}%", f"{cmp.accuracy_diff*100:+.2f}%")
+    table.add_row("Accuracy Retention", f"{cmp.run_a.accuracy_retention_pct:.2f}%", f"{cmp.run_b.accuracy_retention_pct:.2f}%", f"{cmp.retention_diff_pct:+.2f}%")
+    table.add_row("Elapsed Time", f"{cmp.run_a.elapsed_time_sec:.1f}s", f"{cmp.run_b.elapsed_time_sec:.1f}s", f"{cmp.elapsed_time_diff_sec:+.1f}s")
+    table.add_row("Reload Verified", str(cmp.run_a.reload_verified), str(cmp.run_b.reload_verified), "—")
+
+    console.print(table)
+
+
+@runs_app.command(name="logs")
+def runs_logs(
+    run_id: str = typer.Argument(..., help="Run ID or path to run directory"),
+    phase: Optional[str] = typer.Option(None, "--phase", "-p", help="Filter logs by phase"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter logs by event category"),
+    limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum event logs to show"),
+    json_output: bool = typer.Option(False, "--json", help="Output log events as JSON Lines"),
+    runs_dir: str = typer.Option("runs", "--runs-dir", help="Root directory containing experiment runs"),
+):
+    """View structured event logs for an optimization run."""
+    try:
+        events = RunManager.get_run_logs(run_id, phase=phase, category=category, limit=limit, runs_root=runs_dir)
+    except Exception as e:
+        console.print(f"[bold red]Failed to read logs for '{run_id}': {e}[/bold red]")
+        raise typer.Exit(1)
+
+    if json_output:
+        for evt in events:
+            print(evt.to_json())
+        return
+
+    if not events:
+        console.print(f"[yellow]No logs found for run '{run_id}' matching criteria.[/yellow]")
+        return
+
+    table = Table(title=f"[bold green]PruneQuest Event Logs — {run_id}[/bold green]")
+    table.add_column("Seq", style="dim", justify="right")
+    table.add_column("Timestamp", style="dim")
+    table.add_column("Phase", style="cyan")
+    table.add_column("Event Type", style="yellow")
+    table.add_column("Details", style="white")
+
+    for evt in events:
+        ts = evt.timestamp[11:19] if len(evt.timestamp) >= 19 else evt.timestamp
+        summary_payload = ", ".join(f"{k}={v}" for k, v in (evt.payload or {}).items() if k not in ("raw", "checkpoint_path"))[:60]
+        table.add_row(
+            str(evt.sequence),
+            ts,
+            evt.phase.upper(),
+            evt.event_type,
+            summary_payload,
+        )
+
+    console.print(table)
+
+
 @app.command()
 @block_app.command(name="resume")
 def resume(
-    run_dir: str = typer.Argument(..., help="Path to previous run directory containing experiments.db"),
+    run_dir: str = typer.Argument(..., help="Path to previous run directory containing experiments.db or manifest.json"),
 ):
     """Resume an interrupted pruning search from the last valid checkpoint."""
     console.print(Panel(f"[bold cyan]Resuming PruneQuest Search from:[/bold cyan] {run_dir}"))
@@ -459,6 +706,29 @@ def resume(
     if not os.path.exists(run_dir):
         console.print(f"[bold red]Run directory does not exist: {run_dir}[/bold red]")
         raise typer.Exit(1)
+
+    import json
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+            model_id = manifest_data.get("model_id")
+            strategy = manifest_data.get("results", {}).get("strategy", "auto")
+            resolved_cfg = manifest_data.get("resolved_config_path")
+            res = UnifiedOptimizer.optimize(
+                model=model_id,
+                strategy=strategy,
+                config=resolved_cfg if (resolved_cfg and os.path.exists(resolved_cfg)) else None,
+                output=run_dir,
+                resume=True,
+                console=console,
+            )
+            console.print("[bold green]✔ Resumed run finished successfully![/bold green]")
+            return
+        except Exception as e:
+            console.print(f"[bold red]Failed to resume search from manifest: {e}[/bold red]")
+            raise typer.Exit(1)
 
     tracker = ExperimentTracker(run_dir)
     latest = tracker.get_latest_accepted()
@@ -487,10 +757,27 @@ def resume(
 @app.command()
 @block_app.command(name="report")
 def report(
-    run_dir: str = typer.Argument(..., help="Path to run directory containing experiments.db"),
-    output: str = typer.Option("reports", "--output", "-o", help="Directory to save report and plots"),
+    run_dir: str = typer.Argument(..., help="Path to run directory containing manifest.json or experiments.db"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Directory to save report and plots (defaults to <run_dir>/reports)"),
 ):
-    """Generate Markdown report and publication-grade plots from SQLite database."""
+    """Generate or regenerate Markdown reports, CSV history, and publication-grade plots without loading models."""
+    if not os.path.exists(run_dir):
+        console.print(f"[bold red]Run directory does not exist: {run_dir}[/bold red]")
+        raise typer.Exit(1)
+
+    try:
+        run_details = RunManager.get_run(run_dir)
+        reports = UnifiedReportGenerator.generate_all_reports(run_details, output_dir=output)
+        summary_path = reports.get("summary")
+        console.print("[bold green]✔ Reports and visualizations generated successfully![/bold green]")
+        console.print(f"Summary Report: [cyan]{summary_path}[/cyan]")
+        console.print(f"Detailed Report: [cyan]{reports.get('detailed')}[/cyan]")
+        console.print(f"Candidate History CSV: [cyan]{reports.get('history_csv')}[/cyan]")
+        return
+    except Exception:
+        pass
+
+    # Legacy fallback for old block-based runs with only experiments.db
     tracker = ExperimentTracker(run_dir)
     df = tracker.get_history_dataframe()
     if df.empty:
@@ -510,7 +797,8 @@ def report(
         "run_dir": run_dir,
     }
 
-    reporter = ReportGenerator(output)
+    target_out = output or os.path.join(run_dir, "reports")
+    reporter = ReportGenerator(target_out)
     plots = reporter.generate_plots(df)
     report_file = reporter.generate_report(df, res, plots)
     console.print(f"[bold green]✔ Report and figures generated at: {report_file}[/bold green]")

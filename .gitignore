@@ -22,8 +22,8 @@ htmlcov/
 .ruff_cache/
 
 # Local experiment runs & checkpoints (do not commit multi-GB safetensors)
-runs/
-reports/
+/runs/
+/reports/
 *.safetensors
 *.bin
 *.pt
