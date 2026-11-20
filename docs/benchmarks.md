@@ -1,47 +1,37 @@
-# Benchmarks & Answer Extraction in PruneQuest
+# Benchmarks and Evaluation
 
-PruneQuest enforces rigorous benchmark evaluations to guide pruning decisions. The primary benchmark for mathematical reasoning is **GSM8K** (`openai/gsm8k`).
+Evaluation behavior is implemented in `src/prunequest/benchmarks/`. It includes native benchmark code, a BenchmarkSpec compiler, and an optional LM Evaluation Harness adapter. Available tasks and features depend on installed extras and dataset access.
 
----
+## Evaluation integrity
 
-## 1. GSM8K Integration
+- Use a development/acceptance split to make pruning decisions and reserve held-out test data for final assessment.
+- Record the benchmark, split, sample limit, prompt format, scorer, and relevant model/tokenizer revisions when comparing results.
+- Small smoke subsets are useful for checking execution, not for strong quality claims.
+- Dataset sample ordering and split behavior are defined by each benchmark/dataset implementation; do not assume the same partition sizes across tasks.
+- Retention values are meaningful only alongside the baseline metric and its direction. Review `benchmarks/constraints.py` and the selected benchmark implementation.
 
-### 1.1 Dataset Partitions
-PruneQuest partitions the GSM8K test set deterministically (using fixed random seed `42`):
+## Discover tasks
 
-| Partition | Size | Purpose |
-| :--- | :--- | :--- |
-| **`smoke`** | 16 samples | Rapid functional tests, sanity checks, CI/CD validation. |
-| **`screening`**| 64 samples | Fast candidate filter during search iterations. |
-| **`dev`** | 512 samples | Intermediate pruning decisions and search optimization. |
-| **`full`** | 1,319 samples | Final publication-grade evaluation and Pareto frontier mapping. |
-| **`calibration`**| 256 samples | Block Influence hidden state calculation (drawn from train split). |
-
----
-
-## 2. Mathematical Prompting & Chat Templates
-
-Modern reasoning models like `Qwen/Qwen2.5-Math-1.5B-Instruct` are sensitive to prompt format. PruneQuest applies the model's official chat template:
-
-```
-<|im_start|>system
-Please reason step by step, and put your final answer within \boxed{}.<|im_end|>
-<|im_start|>user
-{question}<|im_end|>
-<|im_start|>assistant
+```bash
+prunequest benchmarks --help
+prunequest benchmarks list --limit 20
+prunequest benchmarks search math
+prunequest benchmarks info gsm8k
 ```
 
-This enforces consistent Chain-of-Thought (CoT) generation and ensures final answers are formatted for parsing.
+LM Evaluation Harness support is optional (`pip install -e '.[eval]'`). Consult command help for options and installed-task behavior.
 
----
+## Custom BenchmarkSpec
 
-## 3. Answer Verification: `math-verify`
+The compiler and schema are in `src/prunequest/benchmarks/spec.py`. Use a checked-in example as the starting point, then validate and preview the spec before evaluation:
 
-Standard LLM evaluators often rely on rigid string matching (`#### 42`), failing when the model responds with LaTeX formatting like `\boxed{42}` or equivalent fractions.
+```bash
+prunequest benchmarks validate --spec path/to/benchmark.yaml
+prunequest benchmarks preview --spec path/to/benchmark.yaml --limit 3
+```
 
-PruneQuest uses a tiered verification pipeline:
-1. **Primary**: Hugging Face [`math-verify`](https://github.com/huggingface/Math-Verify) parses mathematical expressions, normalizing numbers, fractions, units, and expressions.
-2. **Secondary**: Strict LaTeX `\boxed{...}` extraction with regex normalization.
-3. **Tertiary**: Standard GSM8K `#### <number>` trailing pattern match.
+Supported dataset sources and scorers are determined by the spec compiler and dataset library versions. Do not infer support from a YAML example alone.
 
-Accuracy is reported alongside **95% Wilson Score Confidence Intervals** to provide statistically robust retention assessments.
+## Interpreting results
+
+Benchmark scores are estimates over sampled data and can vary with generation settings, prompt templates, and dataset revisions. A retention threshold is an optimization constraint, not a guarantee of generalization. Report sample counts and configuration with any result you publish.

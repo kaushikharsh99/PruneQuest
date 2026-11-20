@@ -1,18 +1,13 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+Security fixes are applied to the current development branch. No release support window is currently published; contact the maintainers if you need guidance for an older version.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-If you discover a security vulnerability in PruneQuest, please report it privately by emailing `harshkaushik11000@gmail.com`.
+Please report suspected vulnerabilities privately to `harshkaushik11000@gmail.com` rather than opening a public issue. Include a description of impact, affected versions/commit if known, and reproducible steps. Avoid sending secrets or private user data.
 
-Please include:
-- A description of the issue and potential impact.
-- Steps to reproduce the vulnerability.
-- Any relevant code snippets or configuration files.
+The project will acknowledge reports as soon as practical and coordinate remediation and disclosure with the reporter. A fixed response-time commitment is not currently published.
 
-We will acknowledge receipt within 48 hours and work with you on a timely remediation before public disclosure.
+PruneQuest Studio is a local application. Changes to networking, request validation, file access, or subprocess behavior should receive particular security review; see `src/prunequest/studio/security/`.

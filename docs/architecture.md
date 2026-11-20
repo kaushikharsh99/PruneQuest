@@ -1,89 +1,44 @@
-# PruneQuest Architecture & Design Principles
+# Architecture
 
-PruneQuest is designed around modularity, hardware safety on resource-constrained GPUs (such as 6 GB mobile GPUs), and physical parameter reduction.
+PruneQuest is a Python package organized around model handling, evaluation, pruning, orchestration, persistence, and optional local Studio UI. The CLI and public Python API are entry points over these package modules.
 
----
+## Package map
 
-## 1. High-Level Architecture Overview
+| Area | Location | Responsibility |
+| --- | --- | --- |
+| CLI and Python API | `src/prunequest/cli.py`, `src/prunequest/api.py` | User-facing command and library entry points. |
+| Models | `src/prunequest/models/` | Architecture discovery, adapter implementations, and model registry. |
+| Pruning | `src/prunequest/pruning/`, `src/prunequest/flap/` | Layer pruning, width slicing, scoring, and FLAP workflow. |
+| Orchestration | `src/prunequest/core/`, `src/prunequest/orchestrator/`, `src/prunequest/sweep/` | Search control, strategy selection, configuration, and joint sweeps. |
+| Evaluation | `src/prunequest/benchmarks/`, `src/prunequest/datasets/` | Benchmark adapters, metric constraints, dataset inspection, and specs. |
+| Runs and reporting | `src/prunequest/runs/`, `src/prunequest/core/tracking.py`, `src/prunequest/reporting/` | Run metadata, event history, and reports. |
+| Export | `src/prunequest/export/`, `src/prunequest/flap/export/` | Checkpoint writing and validation helpers. |
+| Studio | `src/prunequest/studio/`, `frontend/` | Optional local web API and browser UI. |
 
-```
-                           +---------------------------+
-                           |  CLI (Typer) / Python API |
-                           +-------------+-------------+
-                                         |
-                                         v
-                           +---------------------------+
-                           |     SearchController      |
-                           +-------------+-------------+
-                                         |
-        +--------------------------------+--------------------------------+
-        |                                |                                |
-        v                                v                                v
-+------------------+           +--------------------+           +------------------+
-|   ModelAdapter   |           |     BasePruner     |           |  BaseBenchmark   |
-|  (e.g., Qwen2)   |           |  (e.g. LayerPruner)|           | (e.g. GSM8K)     |
-+------------------+           +--------------------+           +------------------+
-        |                                |                                |
-        v                                v                                v
-Physical Surgery & Config       Block Influence Cosine           math-verify & CoT
-Index Synchronization            Importance Scoring               Deterministic Eval
-        |                                |                                |
-        +--------------------------------+--------------------------------+
-                                         |
-                                         v
-                           +---------------------------+
-                           |    ExperimentTracker      |
-                           |   (SQLite + JSONL Traces) |
-                           +-------------+-------------+
-                                         |
-                                         v
-                           +---------------------------+
-                           |    CheckpointExporter     |
-                           |   (Safetensors + Meta)    |
-                           +---------------------------+
+## Typical optimization flow
+
+```mermaid
+flowchart TD
+  Entry[CLI or Python API] --> Plan[Configuration and preflight]
+  Plan --> Model[Discover and load model adapter]
+  Model --> Baseline[Evaluate baseline]
+  Baseline --> Search[Propose structural candidates]
+  Search --> Evaluate[Evaluate candidate constraints]
+  Evaluate -->|accepted| Persist[Record run and checkpoint]
+  Evaluate -->|rejected| Search
+  Persist --> Report[Report or export]
 ```
 
----
+Concrete behavior varies by selected workflow. Consult the relevant implementation and CLI help rather than assuming every workflow uses every stage shown above.
 
-## 2. Core Modules
+## Design constraints
 
-### 2.1 Model Adapters (`prunequest.models`)
-- **`BaseModelAdapter`**: Abstract interface defining layer discovery, physical weight surgery, forward-pass health checks, and checkpoint serialization.
-- **`Qwen2Adapter`**: Handles `Qwen2ForCausalLM`. Implements:
-  - Exact `nn.ModuleList` element deletion.
-  - Synchronization of `model.config.num_hidden_layers` and `model.config.layer_types`.
-  - Re-indexing of layer indices (`layer.self_attn.layer_idx = idx`) across remaining layers to prevent RoPE cache mismatches.
-- **`ModelRegistry`**: Factory pattern decoupling model implementations from search algorithms.
+- Pruning is intended to change model structure physically; a mask alone is not equivalent to structural compression.
+- Model adapter responsibilities include locating the relevant modules and keeping architecture metadata consistent after structural changes.
+- Evaluation requirements are expressed through benchmark implementations and metric/constraint code. Acceptance behavior must be verified in the selected workflow.
+- Run formats and checkpoint validation are implementation details that may evolve. Prefer the run readers and exporters over hard-coding undocumented artifact layouts.
+- The Studio server is optional and intended for local use. Review `src/prunequest/studio/security/` when changing its request handling or binding behavior.
 
-### 2.2 Pruning Backends (`prunequest.pruning`)
-- **`LayerPruner`**: Physical transformer layer pruner. Computes token-level cosine distances (Block Influence) across hidden state representations.
-- **Candidate Generator**: Proposes candidate removals ordered by minimal influence score.
+## Persistence
 
-### 2.3 Evaluation & Benchmarks (`prunequest.benchmarks`)
-- **`GSM8KBenchmark`**: Zero-shot Chain-of-Thought (CoT) evaluation with deterministic sample subsets (`smoke=16`, `dev=512`, `full=1319`).
-- **Official Chat Template**: Formats math prompts using Qwen's chat template (`<|im_start|>system...<|im_start|>user...`).
-- **Answer Verification**: Multi-stage parsing prioritizing Hugging Face `math-verify`, with regex LaTeX `\boxed{}` and numeric exact match fallbacks.
-
-### 2.4 Search Strategies (`prunequest.core`)
-- **`GreedySearchStrategy`**: Evaluates candidate layer removals sequentially.
-- **Two-Phase Verification**: Screens candidates on a compact subset before full evaluation, reducing compute time by up to 70%. The winning candidate is then evaluated on the full development benchmark split before acceptance.
-- **Rollback & Rejection Engine**: In-memory layer backups and SQLite state logging ensure candidate rejection and rollback whenever accuracy falls below the retention threshold ($R = \frac{\text{Acc}_{\text{pruned}}}{\text{Acc}_{\text{baseline}}} < \tau$) or when subprocess reload validation fails.
-- **Baseline Preservation on Resume**: Resumed experiments query the root baseline record from SQLite, strictly maintaining the unpruned reference performance rather than resetting to an already-pruned model.
-
-### 2.5 Experiment Tracking & Persistence (`prunequest.core.tracking`)
-- **`ExperimentTracker`**: Manages run directories, logging to both SQLite (`experiments.db`) and streaming JSONL (`run_trace.jsonl`).
-- Enables clean resumption after interrupts or system crashes.
-
-### 2.6 Checkpoint Export & Validation (`prunequest.export`)
-- **`CheckpointExporter`**: Produces standalone Hugging Face `safetensors` checkpoints loadable by standard `transformers.AutoModelForCausalLM.from_pretrained()`.
-- Writes `prunequest_metadata.json` containing layer count, parameter count, baseline comparison, and retention metrics.
-- **`SubprocessValidator`**: Launches an independent Python subprocess to verify clean reloadability, preventing corrupted checkpoints from entering production.
-
----
-
-## 3. GPU Memory Management (6 GB Budget)
-
-On laptop GPUs with 6 GB VRAM, loading two 1.5B parameter models in memory simultaneously causes immediate CUDA Out-Of-Memory errors. PruneQuest enforces:
-1. **Explicit CPU Offloading**: Before child subprocess reload tests or candidate comparisons, weights are temporarily offloaded or cleared.
-2. **Deterministic Garbage Collection**: `gc.collect()` followed by `torch.cuda.empty_cache()` and `torch.cuda.ipc_collect()`.
-3. **MKL GNU Threading Guard**: Setting `MKL_THREADING_LAYER=GNU` and importing `numpy` before `torch` prevents deadlocks between OpenMP and Intel MKL in spawned workers.
+Run state, events, checkpoints, and generated reports are handled by separate modules. Use `src/prunequest/runs/` and `src/prunequest/core/tracking.py` as the source of truth for current persistence behavior; this document avoids promising a fixed schema beyond what those implementations guarantee.

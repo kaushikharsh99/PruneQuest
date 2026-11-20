@@ -11,9 +11,11 @@
 [![HuggingFace](https://img.shields.io/badge/HuggingFace-Transformers-yellow.svg)](https://huggingface.co/)
 [![LM-Eval](https://img.shields.io/badge/LM--Eval-14k+_Tasks-green.svg)](https://github.com/EleutherAI/lm-evaluation-harness)
 
-**PruneQuest** is an open-source, universal, benchmark-driven structural pruning framework designed to compress Large Language Models while strictly enforcing user-defined performance retention constraints.
+**PruneQuest** is an open-source framework for benchmark-guided structural pruning of Large Language Models. Its workflows evaluate candidates against user-configured performance constraints; supported operations vary by model and workflow.
 
-Instead of applying blind heuristics or non-functional weight masking, PruneQuest **physically prunes transformer layers**, verifies functional integrity across single or multi-benchmark suites, and enforces strict directional performance retention thresholds (e.g. $\ge 99\%$ retention) with automatic transactional rollback.
+> Documentation note: capabilities depend on the model family and selected workflow. Treat the implementation and tests as authoritative, and see the [documentation index](docs/index.md) and [agent guide](AGENTS.md) before extending the project.
+
+PruneQuest includes physical structural pruning methods and benchmark-guided search workflows. The available operations, validation steps, and constraint behavior depend on the selected model adapter and workflow.
 
 ---
 
@@ -33,6 +35,8 @@ Instead of applying blind heuristics or non-functional weight masking, PruneQues
 ---
 
 ## Model Architecture Support & Capability Tiers
+
+The table summarizes project-reported capability. It is not a compatibility guarantee for every checkpoint revision or dependency version. Check the adapter implementation and relevant tests for the exact operation you plan to use; adapter presence alone does not prove end-to-end support.
 
 | Family | Architecture Class | Capability Level | Supported Pruning Operations |
 | :--- | :--- | :--- | :--- |

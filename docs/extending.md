@@ -1,111 +1,27 @@
-# Extending PruneQuest: Custom Models, Pruners, and Benchmarks
+# Extending PruneQuest
 
-PruneQuest is architected with clear plugin boundaries, enabling developers to register custom models, search strategies, and evaluation benchmarks.
+Use the existing implementation and tests as the extension contract. APIs may differ across the core benchmark, model, FLAP, and Studio subsystems.
 
----
+## Add or update a model adapter
 
-## 1. Adding a New Model Adapter
+1. Inspect `src/prunequest/models/base.py`, a nearby family adapter, and `src/prunequest/models/registry.py`.
+2. Implement only behavior supported by the target architecture. Keep module/config dimensions and layer indices consistent after surgery.
+3. Add CPU-only synthetic tests for discovery, structural edits, forward validation, and edge cases where practical.
+4. If FLAP support is intended, inspect `src/prunequest/flap/models/` separately; core adapter support does not imply FLAP support.
+5. Update the compatibility docs with the precise capability and evidence.
 
-Inherit from `BaseModelAdapter` and register your class with `@ModelRegistry.register`:
+## Add a benchmark or scorer
 
-```python
-from typing import List, Tuple, Optional
-import torch
-import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from prunequest.models.base import BaseModelAdapter, ModelMetadata
-from prunequest.models.registry import ModelRegistry
+Inspect `src/prunequest/benchmarks/base.py`, `registry.py`, `spec.py`, and existing implementations. Keep dataset loading, prompt construction, scoring, and split selection explicit. Add small deterministic fixtures that do not fetch remote data.
 
+## Add an optimization strategy
 
-@ModelRegistry.register("llama")
-class LlamaAdapter(BaseModelAdapter):
+Inspect `src/prunequest/core/`, `src/prunequest/orchestrator/`, and `src/prunequest/sweep/` to identify the correct layer. Preserve baseline integrity, candidate rollback, and run recording. Add focused tests for acceptance, rejection, resume, and failure paths relevant to the change.
 
-    def load(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            torch_dtype=getattr(torch, self.torch_dtype),
-            device_map=self.device,
-        )
+## Update Studio
 
-    def get_layers(self) -> nn.ModuleList:
-        return self.model.model.layers
+The backend is under `src/prunequest/studio/`; frontend source is under `frontend/`. Keep API schemas, frontend types, route behavior, and security middleware aligned. Build commands are defined in `frontend/package.json`.
 
-    def prune_layer(self, layer_idx: int) -> int:
-        layers = self.get_layers()
-        removed_layer = layers[layer_idx]
-        params_removed = sum(p.numel() for p in removed_layer.parameters())
+## Documentation and verification
 
-        del layers[layer_idx]
-        self.model.config.num_hidden_layers -= 1
-        
-        # Re-index remaining layers
-        for idx, layer in enumerate(layers):
-            layer.self_attn.layer_idx = idx
-
-        return params_removed
-
-    def count_parameters(self) -> int:
-        return sum(p.numel() for p in self.model.parameters())
-
-    def validate_forward(self) -> Tuple[bool, Optional[str]]:
-        try:
-            inputs = self.tokenizer("Hello, world!", return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                self.model(**inputs)
-            return True, None
-        except Exception as e:
-            return False, str(e)
-```
-
----
-
-## 2. Adding a New Benchmark
-
-Inherit from `BaseBenchmark` and register your class with `@BenchmarkRegistry.register`:
-
-```python
-from typing import List
-from prunequest.benchmarks.base import BaseBenchmark, BenchmarkSample, EvaluationResult
-from prunequest.benchmarks.registry import BenchmarkRegistry
-from prunequest.models.base import BaseModelAdapter
-
-
-@BenchmarkRegistry.register("custom_math")
-class CustomMathBenchmark(BaseBenchmark):
-
-    def load_samples(self, split: str = "smoke", limit: int = 16) -> List[BenchmarkSample]:
-        # Return a list of BenchmarkSample(id=..., question=..., expected_answer=...)
-        pass
-
-    def evaluate(self, adapter: BaseModelAdapter, split: str = "smoke", limit: int = 16) -> EvaluationResult:
-        # Run inference and evaluate accuracy
-        pass
-```
-
----
-
-## 3. Custom Search Strategies
-
-Custom pruning search strategies (e.g., genetic algorithms, Bayesian optimization, or multi-objective Pareto exploration) can inherit from `BaseSearchStrategy`:
-
-```python
-from prunequest.core.search import BaseSearchStrategy, SearchState
-from prunequest.models.base import BaseModelAdapter
-from prunequest.benchmarks.base import BaseBenchmark
-from prunequest.pruning.base import BasePruner
-
-
-class BayesianSearchStrategy(BaseSearchStrategy):
-
-    def search(
-        self,
-        adapter: BaseModelAdapter,
-        benchmark: BaseBenchmark,
-        pruner: BasePruner,
-        max_iterations: int,
-        retention_threshold: float,
-    ) -> SearchState:
-        # Implement custom search loop
-        pass
-```
+Update CLI help/examples whenever interfaces change. Run focused tests and `ruff check .` for Python changes when available. Real-model integration tests can download large weights; run them only when needed and with sufficient resources. See [AGENTS.md](../AGENTS.md) and [CONTRIBUTING.md](../CONTRIBUTING.md).
