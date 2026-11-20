@@ -64,6 +64,8 @@ export const App: React.FC = () => {
     loadAppState();
   };
 
+  const runningRunId = activeRunId || recentRuns[0]?.run_id || 'demo_run';
+
   return (
     <div className="min-h-screen bg-surface-50 text-stone-800 flex flex-col font-sans selection:bg-sage-200">
       <Navbar
@@ -90,8 +92,11 @@ export const App: React.FC = () => {
           )}
 
           {currentTab === 'running' && (
+            // Keyed by run ID so switching runs remounts the page and resets
+            // its live state (events, SSE cursor, details, errors).
             <RunningPage
-              runId={activeRunId || recentRuns[0]?.run_id || 'demo_run'}
+              key={runningRunId}
+              runId={runningRunId}
               onNavigate={handleNavigate}
             />
           )}
