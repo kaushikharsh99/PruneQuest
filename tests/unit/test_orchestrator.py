@@ -157,6 +157,46 @@ def test_preflight_checker():
     PreflightChecker.render_plan(plan)
 
 
+def test_preflight_preserves_dataset_and_hardware_warnings():
+    """Dataset validation warnings must survive alongside hardware warnings."""
+    descriptor = MagicMock()
+    descriptor.model_type = "qwen2"
+    descriptor.architecture_class.value = "decoder"
+    # Large enough that the estimated disk need doesn't round to 0 GB.
+    descriptor.num_hidden_layers = 32
+    descriptor.hidden_size = 4096
+    descriptor.raw_config = {"intermediate_size": 11008}
+    report = MagicMock(descriptor=descriptor)
+
+    # Low free disk space triggers the hardware disk warning.
+    hw = MagicMock(free_vram_gb=0.0, free_disk_gb=0.0, device_name="CPU")
+    ds_report = MagicMock(
+        format="jsonl",
+        task_type="qa",
+        proposed_scorer="exact_match",
+        warnings=["column 'answer' has 3 empty rows"],
+    )
+
+    with patch(
+        "prunequest.orchestrator.preflight.StrategyResolver.resolve",
+        return_value=(PruningStrategy.JOINT, "test", report),
+    ), patch(
+        "prunequest.orchestrator.preflight.HardwareInspector.inspect", return_value=hw
+    ), patch(
+        "prunequest.orchestrator.preflight.HardwareInspector.resolve_device", return_value="cpu"
+    ), patch(
+        "prunequest.datasets.inspector.DatasetInspector.inspect", return_value=ds_report
+    ):
+        plan = PreflightChecker.plan(
+            model_id="synthetic/model",
+            device="cpu",
+            dataset="custom.jsonl",
+        )
+
+    assert "column 'answer' has 3 empty rows" in plan.warnings
+    assert any("Free disk space" in w for w in plan.warnings)
+
+
 def test_optimize_api_dry_run():
     # Test high-level Python API with dry_run=True
     result = optimize(
