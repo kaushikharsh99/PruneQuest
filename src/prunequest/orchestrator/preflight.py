@@ -119,7 +119,6 @@ class PreflightChecker:
 
         mem_needs = HardwareInspector.estimate_memory_needs(total_params)
 
-        warnings: List[str] = []
         if resolved_device.startswith("cuda"):
             if hw.free_vram_gb < mem_needs["weights_gb"]:
                 warnings.append(
